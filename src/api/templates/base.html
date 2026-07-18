@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}LLopster — agent{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', path='app.css') }}">
+    <script src="https://unpkg.com/htmx.org@2.0.3" defer></script>
+    <script src="https://unpkg.com/htmx-ext-sse@2.2.2/sse.js" defer></script>
+</head>
+<body>
+{# Minimal nav for the agent service.  The agent only hosts the /trigger
+   form — full UI (runs, stats, settings, diagnostics) lives on the
+   dashboard. The "Open dashboard" link is a hardcoded /runs path; in the
+   Helm-chart ingress topology /runs/* is routed to the dashboard pod. #}
+<header class="topbar">
+    <h1>LLopster <span class="muted" style="font-size: 13px; font-weight: 400;">agent</span></h1>
+    <nav>
+        <a href="{{ url_for('trigger_form') }}" {% if active == 'trigger' %}class="active"{% endif %}>Trigger</a>
+        <a href="/runs">Open dashboard ↗</a>
+    </nav>
+    <div style="margin-left: auto;" class="muted">v0.6.0</div>
+</header>
+<main>
+    {% block content %}{% endblock %}
+</main>
+</body>
+</html>

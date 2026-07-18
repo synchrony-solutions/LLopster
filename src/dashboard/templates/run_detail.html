@@ -1,0 +1,324 @@
+{% extends "base.html" %}
+{% block title %}{{ run.alertname }} — llopster{% endblock %}
+{% block content %}
+
+<div class="crumbs">
+    <a href="{{ url_for('runs_list') }}">← All runs</a>
+</div>
+
+<div class="detail-header">
+    <div id="detail-header-inner" style="flex: 1;">
+        <h2>{{ run.alertname }}</h2>
+        <div class="meta">
+            <span><strong>Service:</strong> {{ run.service or '—' }}</span>
+            <span><strong>Run ID:</strong> <code>{{ run.id }}</code></span>
+            <span><strong>Received:</strong> {{ run.received_at | dt }}</span>
+            <span><strong>Triggered by:</strong> {{ run.trigger_source }}</span>
+        </div>
+    </div>
+    <div class="pills">
+        {% if run.severity %}<span class="{{ severity_class(run.severity) }}">{{ run.severity }}</span>{% endif %}
+        <span class="{{ status_class(run.processing_status) }}">
+            {% if not is_terminal_status(run.processing_status) %}<span class="live-dot"></span>{% endif %}
+            {{ run.processing_status }}
+        </span>
+        {% if run.parsed_confidence is not none %}
+        <span class="{{ confidence_class(run.parsed_confidence) }}">confidence {{ run.parsed_confidence }}/5</span>
+        {% endif %}
+    </div>
+</div>
+
+{% if run.processing_status == "queued" %}
+<div class="error-banner" style="color: var(--yellow); background: var(--yellow-soft); border-color: var(--yellow); display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+    <span style="flex: 1;"><strong>Awaiting operator dispatch.</strong> Webhook arrived while the agent is in <a href="/settings">manual mode</a> — click ▶ Dispatch to process this alert now.</span>
+    {% if agent_url %}
+    {# POSTs to the dashboard's own proxy endpoint, which forwards to the
+       agent over in-cluster DNS. We can't POST to {{ agent_url }} directly
+       from the browser because that hostname is cluster-internal. #}
+    <form method="post" action="{{ url_for('run_dispatch', run_id=run.id) }}" style="margin: 0;">
+        <button type="submit" class="settings-btn" style="background: var(--yellow); color: #1a1a1a; font-weight: 600;">▶ Dispatch this run</button>
+    </form>
+    {% else %}
+    <span class="muted" style="font-size: 12px;">(set <code>AGENT_URL</code> env on the dashboard pod to enable this button)</span>
+    {% endif %}
+</div>
+{% elif run.error_message %}
+<div class="error-banner">Pipeline error: {{ run.error_message }}</div>
+{% endif %}
+
+{# ---------------- Operator verdict (ground-truth flywheel) ---------------- #}
+{% if is_terminal_status(run.processing_status) %}
+<section class="section">
+    <h3>Operator verdict <span class="muted" style="font-size: 13px; font-weight: 400;">(was the agent right?)</span></h3>
+    <div class="body">
+        {% include "partials/_operator_label.html" %}
+    </div>
+</section>
+{% endif %}
+
+{# ---------------- Triage (Haiku gate) ---------------- #}
+{% if run.triage_decision %}
+<section class="section">
+    <h3>Triage <span class="muted" style="font-size: 13px; font-weight: 400;">(pre-flight Haiku gate)</span></h3>
+    <div class="body">
+        <dl class="kv">
+            <dt>Decision</dt>
+            <dd>
+                {% if run.triage_decision == "proceed" %}
+                <span class="pill pill-done">proceed</span>
+                {% else %}
+                <span class="pill pill-skip">skip</span>
+                {% endif %}
+                {% if run.triage_confidence is not none %}
+                <span class="{{ confidence_class(run.triage_confidence) }}" style="margin-left: 6px;">confidence {{ run.triage_confidence }}/5</span>
+                {% endif %}
+            </dd>
+            <dt>Model</dt>
+            <dd><code>{{ run.triage_model or '—' }}</code></dd>
+            {% if run.triage_reasoning %}
+            <dt>Reasoning</dt>
+            <dd>{{ run.triage_reasoning }}</dd>
+            {% endif %}
+        </dl>
+        <div class="tokens" style="margin-top: 12px;">
+            <div class="token-card"><div class="label">Input</div><div class="value">{{ '{:,}'.format(run.triage_input_tokens) if run.triage_input_tokens else '—' }}</div></div>
+            <div class="token-card"><div class="label">Output</div><div class="value">{{ '{:,}'.format(run.triage_output_tokens) if run.triage_output_tokens else '—' }}</div></div>
+            <div class="token-card"><div class="label">Cache read</div><div class="value">{{ '{:,}'.format(run.triage_cache_read_tokens) if run.triage_cache_read_tokens else '—' }}</div></div>
+            <div class="token-card"><div class="label">Cache create</div><div class="value">{{ '{:,}'.format(run.triage_cache_creation_tokens) if run.triage_cache_creation_tokens else '—' }}</div></div>
+        </div>
+    </div>
+</section>
+{% endif %}
+
+{# ---------------- Context collected ---------------- #}
+<section class="section">
+    <h3>Context collected</h3>
+    <div class="body">
+        <dl class="kv">
+            <dt>LogQL</dt>
+            <dd>{% if run.logql_used %}<code>{{ run.logql_used }}</code>{% else %}—{% endif %}</dd>
+            <dt>PromQL</dt>
+            <dd>{% if run.promql_used %}<code>{{ run.promql_used }}</code>{% else %}—{% endif %}</dd>
+            <dt>Lookback</dt>
+            <dd>{% if run.lookback_minutes %}{{ run.lookback_minutes }} min{% else %}—{% endif %}</dd>
+            <dt>Log lines</dt>
+            <dd>{{ run.log_line_count }}</dd>
+            <dt>Metric samples</dt>
+            <dd>{{ run.metric_sample_count }}</dd>
+        </dl>
+        {% if run.collection_errors_json %}
+        <div style="margin-top: 12px;">
+            <strong style="color: var(--yellow);">Collection warnings:</strong>
+            <ul style="margin: 6px 0 0 0; color: var(--text-dim);">
+                {% for e in run.collection_errors_json %}<li>{{ e }}</li>{% endfor %}
+            </ul>
+        </div>
+        {% endif %}
+
+        {% if run.log_lines_json %}
+        <details style="margin-top: 16px;">
+            <summary>{{ run.log_lines_json | length }} log lines (click to expand)</summary>
+            <table class="logs">
+                {% for line in run.log_lines_json[:100] %}
+                <tr>
+                    <td class="ts">{{ line.timestamp }}</td>
+                    <td>{{ line.line }}</td>
+                </tr>
+                {% endfor %}
+            </table>
+            {% if run.log_lines_json | length > 100 %}
+            <div class="muted" style="padding: 8px;">… {{ run.log_lines_json | length - 100 }} more lines truncated</div>
+            {% endif %}
+        </details>
+        {% endif %}
+
+        {% if run.metric_samples_json %}
+        <details style="margin-top: 8px;">
+            <summary>{{ run.metric_samples_json | length }} metric samples</summary>
+            <table class="logs">
+                {% for s in run.metric_samples_json %}
+                <tr>
+                    <td>{{ s.metric }}</td>
+                    <td><code>{{ s.value }}</code></td>
+                </tr>
+                {% endfor %}
+            </table>
+        </details>
+        {% endif %}
+    </div>
+</section>
+
+{# ---------------- Investigation (Sonnet) ---------------- #}
+{% if run.investigation_model %}
+<section class="section">
+    <h3>Investigation <span class="muted" style="font-size: 13px; font-weight: 400;">(Sonnet — diagnosis from outline)</span></h3>
+    <div class="body">
+        {% if run.investigation_root_cause %}
+        <h4 style="margin-top: 0; font-size: 13px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.05em;">Root cause hypothesis</h4>
+        <div class="markdown">{{ run.investigation_root_cause | markdown }}</div>
+        {% endif %}
+
+        {% if run.investigation_affected_files_json %}
+        <h4 style="font-size: 13px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.05em; margin-top: 20px;">Affected files
+            <span class="muted" style="font-weight: 400; text-transform: none; letter-spacing: 0;">— what Opus will see when Phase C ships</span>
+        </h4>
+        <ul style="margin: 6px 0; padding-left: 20px;">
+            {% for path in run.investigation_affected_files_json %}
+            <li><code>{{ path }}</code></li>
+            {% endfor %}
+        </ul>
+        {% elif run.investigation_affected_files_json is not none %}
+        <p class="muted" style="margin-top: 8px;">
+            <em>No affected files identified — Phase C will fall back to the full codebase.</em>
+        </p>
+        {% endif %}
+
+        {% if run.investigation_confidence is not none %}
+        <h4 style="font-size: 13px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.05em; margin-top: 20px;">Confidence</h4>
+        <div>
+            <span class="{{ confidence_class(run.investigation_confidence) }}">{{ run.investigation_confidence }}/5</span>
+        </div>
+        {% endif %}
+
+        {% if run.investigation_reasoning %}
+        <h4 style="font-size: 13px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.05em; margin-top: 20px;">Reasoning</h4>
+        <div class="markdown">{{ run.investigation_reasoning | markdown }}</div>
+        {% endif %}
+
+        {% if run.investigation_response_text %}
+        <details style="margin-top: 20px;">
+            <summary>Raw Sonnet response</summary>
+            <pre class="code">{{ run.investigation_response_text }}</pre>
+        </details>
+        {% endif %}
+
+        <div class="tokens" style="margin-top: 16px;">
+            <div class="token-card"><div class="label">Model</div><div class="value" style="font-size: 13px;">{{ run.investigation_model }}</div></div>
+            <div class="token-card"><div class="label">Input</div><div class="value">{{ '{:,}'.format(run.investigation_input_tokens) if run.investigation_input_tokens else '—' }}</div></div>
+            <div class="token-card"><div class="label">Output</div><div class="value">{{ '{:,}'.format(run.investigation_output_tokens) if run.investigation_output_tokens else '—' }}</div></div>
+            <div class="token-card"><div class="label">Cache read</div><div class="value">{{ '{:,}'.format(run.investigation_cache_read_tokens) if run.investigation_cache_read_tokens else '—' }}</div></div>
+            <div class="token-card"><div class="label">Cache create</div><div class="value">{{ '{:,}'.format(run.investigation_cache_creation_tokens) if run.investigation_cache_creation_tokens else '—' }}</div></div>
+            <div class="token-card"><div class="label">Latency</div><div class="value" style="font-size: 16px;">{{ run.investigation_latency_ms | duration }}</div></div>
+        </div>
+    </div>
+</section>
+{% endif %}
+
+{# ---------------- Claude's response ---------------- #}
+{% if run.llm_response_text %}
+<section class="section">
+    <h3>Claude's response</h3>
+    <div class="body">
+        {% if run.parsed_root_cause %}
+        <h4 style="margin-top: 0; font-size: 13px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.05em;">Root cause</h4>
+        <div class="markdown">{{ run.parsed_root_cause | markdown }}</div>
+        {% endif %}
+
+        {% if run.parsed_diff %}
+        <h4 style="font-size: 13px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.05em; margin-top: 20px;">Proposed patch</h4>
+        {{ run.parsed_diff | diff }}
+        {% endif %}
+
+        {% if run.parsed_confidence is not none %}
+        <h4 style="font-size: 13px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.05em; margin-top: 20px;">Confidence</h4>
+        <div>
+            <span class="{{ confidence_class(run.parsed_confidence) }}">{{ run.parsed_confidence }}/5</span>
+            {% if run.parsed_confidence_reason %}
+            <span class="muted">— {{ run.parsed_confidence_reason }}</span>
+            {% endif %}
+        </div>
+        {% endif %}
+
+        {% set reasoning = parse_reasoning(run.llm_response_text) %}
+        {% if reasoning %}
+        <h4 style="font-size: 13px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.05em; margin-top: 20px;">Reasoning</h4>
+        <div class="markdown">{{ reasoning | markdown }}</div>
+        {% endif %}
+
+        <details style="margin-top: 20px;">
+            <summary>Raw response</summary>
+            <pre class="code">{{ run.llm_response_text }}</pre>
+        </details>
+    </div>
+</section>
+
+<section class="section">
+    <h3>Token usage</h3>
+    <div class="body">
+        <div class="tokens">
+            <div class="token-card">
+                <div class="label">Model · context</div>
+                <div class="value" style="font-size: 13px;">
+                    {{ run.model or '—' }}
+                    {% if run.synthesis_used_narrowed_context is sameas true %}
+                    <br><span class="pill pill-done" style="margin-top: 2px;">narrowed{% if run.investigation_affected_files_json %} · {{ run.investigation_affected_files_json | length }} files{% endif %}</span>
+                    {% elif run.synthesis_used_narrowed_context is sameas false %}
+                    <br><span class="pill pill-skip" style="margin-top: 2px;">full codebase</span>
+                    {% endif %}
+                </div>
+            </div>
+            <div class="token-card"><div class="label">Input</div><div class="value">{{ '{:,}'.format(run.input_tokens) if run.input_tokens else '—' }}</div></div>
+            <div class="token-card"><div class="label">Output</div><div class="value">{{ '{:,}'.format(run.output_tokens) if run.output_tokens else '—' }}</div></div>
+            <div class="token-card"><div class="label">Cache read</div><div class="value">{{ '{:,}'.format(run.cache_read_tokens) if run.cache_read_tokens else '—' }}</div></div>
+            <div class="token-card"><div class="label">Cache create</div><div class="value">{{ '{:,}'.format(run.cache_creation_tokens) if run.cache_creation_tokens else '—' }}</div></div>
+            <div class="token-card"><div class="label">Latency</div><div class="value" style="font-size: 16px;">{{ run.llm_latency_ms | duration }}</div></div>
+        </div>
+    </div>
+</section>
+{% endif %}
+
+{# ---------------- Outcomes ---------------- #}
+<section class="section">
+    <h3>Outcomes</h3>
+    <div class="body">
+        <dl class="kv">
+            <dt>GitHub PR</dt>
+            <dd>
+                {% if run.pr_opened and run.pr_url %}
+                <a href="{{ run.pr_url }}" target="_blank" rel="noopener" class="pill pill-pr">#{{ run.pr_number }} — {{ run.pr_url }}</a>
+                {% if run.pr_branch %}<span class="muted" style="margin-left: 8px;">branch <code>{{ run.pr_branch }}</code></span>{% endif %}
+                {% elif run.pr_skip_reason %}
+                <span class="skip-reason">skipped — {{ run.pr_skip_reason }}</span>
+                {% else %}
+                —
+                {% endif %}
+            </dd>
+            <dt>Slack</dt>
+            <dd>
+                {% if run.slack_notified %}<span class="pill pill-done">notified</span>
+                {% elif run.slack_skip_reason %}<span class="skip-reason">skipped — {{ run.slack_skip_reason }}</span>
+                {% else %}—{% endif %}
+            </dd>
+        </dl>
+    </div>
+</section>
+
+{# ---------------- Raw alert payload ---------------- #}
+<section class="section">
+    <h3>Alert payload</h3>
+    <div class="body">
+        <details>
+            <summary>Show raw JSON</summary>
+            <pre class="code">{{ run.alert_payload_json | tojson(indent=2) }}</pre>
+        </details>
+    </div>
+</section>
+
+{% if not is_terminal_status(run.processing_status) %}
+<script>
+(function () {
+    var TERMINAL = new Set(["done", "failed", "skipped"]);
+    var es = new EventSource("{{ url_for('run_detail_stream', run_id=run.id) }}");
+    es.onmessage = function (e) {
+        var d = JSON.parse(e.data);
+        if (TERMINAL.has(d.status)) {
+            es.close();
+            window.location.reload();
+        }
+    };
+    es.onerror = function () { es.close(); };
+})();
+</script>
+{% endif %}
+
+{% endblock %}

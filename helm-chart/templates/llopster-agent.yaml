@@ -1,0 +1,276 @@
+{{- /*
+  Secure-by-default gate. Evaluated UNCONDITIONALLY — it must run even when
+  agent.enabled=false (a dashboard-only install still exposes settings/license/
+  trigger/label write surfaces behind the dashboard Ingress), so it lives
+  outside the `if .Values.agent.enabled` block below. If any inbound surface is
+  exposed — via Ingress OR a Service of type LoadBalancer/NodePort (both are
+  reachable from off-cluster) — and no shared secret is configured, refuse to
+  render rather than ship an unauthenticated /webhook + trigger + settings/
+  license behind a public address — those surfaces spend LLM money and hold a
+  write-scoped GitHub PAT. Set agent.secrets.LLOPSTER_API_TOKEN to a strong
+  random value (and have AlertManager send it as a bearer token — see
+  helm-chart/docs/integration-recipes/alertmanager-receiver.yaml). For an
+  explicitly trusted/local-only deploy, set agent.allowUnauthenticated=true to
+  keep the no-token convenience (the agent still logs a loud startup warning).
+*/ -}}
+{{- $apiToken := .Values.agent.secrets.LLOPSTER_API_TOKEN | default "" -}}
+{{- $externalSvcTypes := list "LoadBalancer" "NodePort" -}}
+{{- $agentSvcType := dig "service" "type" "ClusterIP" .Values.agent -}}
+{{- $dashboardSvcType := dig "service" "type" "ClusterIP" .Values.dashboard -}}
+{{- $agentExposed := or (dig "services" "agent" "enabled" false .Values.ingress) (has $agentSvcType $externalSvcTypes) -}}
+{{- $dashboardExposed := or (dig "services" "dashboard" "enabled" false .Values.ingress) (has $dashboardSvcType $externalSvcTypes) -}}
+{{- if and (or $agentExposed $dashboardExposed) (not $apiToken) (not .Values.agent.allowUnauthenticated) -}}
+{{- fail "Refusing to render: the agent or dashboard is exposed (Ingress enabled, or a Service of type LoadBalancer/NodePort) but agent.secrets.LLOPSTER_API_TOKEN is empty, which would expose /webhook, the trigger routes, and settings/license UNAUTHENTICATED while holding a write-scoped GitHub PAT. Set agent.secrets.LLOPSTER_API_TOKEN to a strong random value (AlertManager must then send it as a bearer token — see helm-chart/docs/integration-recipes/alertmanager-receiver.yaml). For an explicitly trusted/local-only deploy, set agent.allowUnauthenticated=true." -}}
+{{- end -}}
+{{- if .Values.agent.enabled }}
+---
+# Sensitive credentials consumed by the agent. Edit the values under
+# `agent.secrets` in values.yaml before installing — they're committed
+# as Secret stringData here so Helm can manage them with the rest of the
+# release. Rotate via `helm upgrade` after editing values.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: llopster-agent
+  labels:
+    {{- include "k3s-deployment.labels" . | nindent 4 }}
+    app.kubernetes.io/component: agent
+type: Opaque
+stringData:
+  ANTHROPIC_API_KEY: {{ .Values.agent.secrets.ANTHROPIC_API_KEY | quote }}
+  SLACK_WEBHOOK_URL: {{ .Values.agent.secrets.SLACK_WEBHOOK_URL | quote }}
+  GITHUB_TOKEN: {{ .Values.agent.secrets.GITHUB_TOKEN | quote }}
+  GITHUB_REPO: {{ .Values.agent.secrets.GITHUB_REPO | quote }}
+  LLOPSTER_LICENSE_KEY: {{ .Values.agent.secrets.LLOPSTER_LICENSE_KEY | default "" | quote }}
+  LLOPSTER_API_TOKEN: {{ .Values.agent.secrets.LLOPSTER_API_TOKEN | default "" | quote }}
+---
+# services.yaml — maps `service` label on alerts to a codebase path and
+# GitHub repo. Mirrors config/services.yaml. Edit the
+# `agent.servicesConfig` map in values.yaml to add more services.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: llopster-agent-services
+  labels:
+    {{- include "k3s-deployment.labels" . | nindent 4 }}
+    app.kubernetes.io/component: agent
+data:
+  services.yaml: |
+    {{- range $name, $cfg := .Values.agent.servicesConfig }}
+    {{ $name }}:
+      codebase_path: {{ $cfg.codebase_path | quote }}
+      github_repo: {{ $cfg.github_repo | quote }}
+    {{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: llopster-agent
+  labels:
+    {{- include "k3s-deployment.labels" . | nindent 4 }}
+    app.kubernetes.io/component: agent
+spec:
+  replicas: {{ .Values.agent.replicas }}
+  selector:
+    matchLabels:
+      app: llopster-agent
+  template:
+    metadata:
+      labels:
+        app: llopster-agent
+        app.kubernetes.io/component: agent
+      annotations:
+        # Roll the pod when the services ConfigMap or credentials Secret change.
+        checksum/services: {{ .Values.agent.servicesConfig | toYaml | sha256sum }}
+        checksum/secrets: {{ .Values.agent.secrets | toYaml | sha256sum }}
+    spec:
+      {{- with .Values.agent.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.imagePullSecret.enabled }}
+      imagePullSecrets:
+        - name: {{ .Values.imagePullSecret.name }}
+      {{- end }}
+      {{- if .Values.agent.codebases }}
+      # Init container clones each configured codebase into the shared
+      # /codebases volume so the agent's PatchGenerator can read source
+      # at runtime (services.yaml entries point at /codebases/<name>).
+      initContainers:
+        - name: clone-codebases
+          image: alpine/git:latest
+          command:
+            - sh
+            - -c
+            - |
+              set -euo pipefail
+              git config --global url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf "https://github.com/"
+              {{- range .Values.agent.codebases }}
+              rm -rf /codebases/{{ .name }}
+              REPO_URL="{{ .gitRepo }}"
+              # Only inject the GITHUB_TOKEN into the URL if it looks like a
+              # real PAT.  Otherwise (placeholder or empty) we fall through
+              # to anonymous clone — the placeholder used to produce a
+              # malformed auth header that made git return HTTP 400.
+              if [ -n "${GITHUB_TOKEN:-}" ] && \
+                 [ "${GITHUB_TOKEN#CHANGEME}" = "${GITHUB_TOKEN}" ] && \
+                 echo "${GITHUB_TOKEN}" | grep -qE "^(ghp_|github_pat_|gho_|ghs_|ghu_)"; then
+                echo "Using GITHUB_TOKEN for git clone auth"
+                REPO_URL=$(echo "$REPO_URL" | sed "s|https://|https://${GITHUB_TOKEN}@|")
+              else
+                echo "GITHUB_TOKEN missing or placeholder; cloning anonymously (works only for public repos)"
+              fi
+              git clone --depth 1 --branch {{ .branch | default "main" }} "$REPO_URL" /codebases/{{ .name }}
+              {{- end }}
+          env:
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef: { name: llopster-agent, key: GITHUB_TOKEN }
+            # Runs under the non-root pod securityContext, so $HOME must be a
+            # writable path for `git config --global` to land its .gitconfig.
+            - name: HOME
+              value: /tmp
+          {{- with .Values.agent.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: codebases
+              mountPath: /codebases
+            # Writable scratch for HOME/.gitconfig under a read-only root fs.
+            - name: tmp
+              mountPath: /tmp
+      {{- end }}
+      containers:
+        - name: agent
+          image: "{{ .Values.agent.image.repository }}:{{ .Values.agent.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.agent.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            {{- range $k, $v := .Values.agent.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+            # PROMETHEUS_URL / LOKI_URL — derived from the top-level
+            # `prometheus` and `loki` blocks so a single switch flips both
+            # the subchart install and the agent's connection target.
+            - name: PROMETHEUS_URL
+              value: {{ if .Values.prometheus.bundled -}}
+                "http://prometheus-server:80"
+              {{- else -}}
+                {{ required "prometheus.url is required when prometheus.bundled=false" .Values.prometheus.url | quote }}
+              {{- end }}
+            - name: LOKI_URL
+              value: {{ if .Values.loki.bundled -}}
+                "http://loki:3100"
+              {{- else -}}
+                {{ required "loki.url is required when loki.bundled=false" .Values.loki.url | quote }}
+              {{- end }}
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef: { name: llopster-agent, key: ANTHROPIC_API_KEY }
+            - name: SLACK_WEBHOOK_URL
+              valueFrom:
+                secretKeyRef: { name: llopster-agent, key: SLACK_WEBHOOK_URL }
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef: { name: llopster-agent, key: GITHUB_TOKEN }
+            - name: GITHUB_REPO
+              valueFrom:
+                secretKeyRef: { name: llopster-agent, key: GITHUB_REPO }
+            # License key (paid-feature gate). Source of truth; the dashboard
+            # Settings page can override it at runtime via the license_key
+            # Setting. Empty = Community tier (gates nothing).
+            - name: LLOPSTER_LICENSE_KEY
+              valueFrom:
+                secretKeyRef: { name: llopster-agent, key: LLOPSTER_LICENSE_KEY }
+            # Shared secret for inbound-surface auth (/webhook, trigger). Empty
+            # disables the check (a loud startup warning is logged).
+            - name: LLOPSTER_API_TOKEN
+              valueFrom:
+                secretKeyRef: { name: llopster-agent, key: LLOPSTER_API_TOKEN }
+            {{- if .Values.postgresql.enabled }}
+            - name: DATABASE_URL
+              value: "postgresql+asyncpg://{{ .Values.postgresql.auth.username }}:{{ .Values.postgresql.auth.password }}@llopster-postgres:5432/{{ .Values.postgresql.auth.database }}"
+            {{- end }}
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            # Redirect any library that writes to $HOME to the writable tmp
+            # emptyDir, since the root filesystem is mounted read-only.
+            - name: HOME
+              value: /tmp
+          {{- with .Values.agent.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: services-config
+              mountPath: /etc/llopster
+              readOnly: true
+            # Writable scratch (tempfiles, HTTP client spool) under a
+            # read-only root filesystem.
+            - name: tmp
+              mountPath: /tmp
+            {{- if .Values.agent.codebases }}
+            - name: codebases
+              mountPath: /codebases
+              readOnly: true
+            {{- end }}
+          # /health is a DB-free 200 — safe as a liveness target so a
+          # transient Postgres outage doesn't restart-loop the pod that
+          # receives AlertManager webhooks. Without these, a wedged agent is
+          # never restarted and stays in the Service endpoints while
+          # AlertManager keeps firing into it. Cadence matches the dashboard.
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.agent.resources | nindent 12 }}
+      volumes:
+        - name: services-config
+          configMap:
+            name: llopster-agent-services
+        - name: tmp
+          emptyDir: {}
+        {{- if .Values.agent.codebases }}
+        - name: codebases
+          emptyDir: {}
+        {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: llopster-agent
+  labels:
+    {{- include "k3s-deployment.labels" . | nindent 4 }}
+    app.kubernetes.io/component: agent
+spec:
+  type: {{ .Values.agent.service.type }}
+  selector:
+    app: llopster-agent
+  ports:
+    - name: http
+      port: {{ .Values.agent.service.port }}
+      targetPort: 8000
+{{- end }}

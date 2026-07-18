@@ -1,0 +1,119 @@
+# =============================================================================
+# Dev cluster overrides — synchrony-solutions home-lab k3s cluster.
+#
+# Layered on top of values.yaml via:
+#
+#   helm upgrade llopster ./helm-chart \
+#     -f helm-chart/values.yaml \
+#     -f helm-chart/values.dev.yaml \
+#     -f helm-chart/values.secret.yaml
+#
+# This file is in-repo because the dev cluster is what we test against;
+# customer installs supply their own overrides and ignore this file.
+# =============================================================================
+
+# Traefik on the `web` entrypoint, nip.io hostnames pointing at the
+# k3s-master-node IP + a tailnet IP.
+#
+# In BYO mode the Prometheus / AlertManager / Loki / Grafana UIs live in the
+# `monitoring` namespace (kube-prometheus-stack ships its own ingress/Grafana),
+# so LLopster only exposes its own dashboard here. The observability ingresses
+# are disabled — their bundled Service targets don't exist in this namespace.
+ingress:
+  className: ""
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: web
+  services:
+    prometheus:
+      enabled: false
+      host: prometheus.192.168.1.142.nip.io
+      tailhost: prometheus.100.92.216.13.nip.io
+      service: prometheus-server
+      port: 80
+    alertmanager:
+      enabled: false
+      host: alertmanager.192.168.1.142.nip.io
+      tailhost: alertmanager.100.92.216.13.nip.io
+      service: alertmanager
+      port: 9093
+    loki:
+      enabled: false
+      host: loki.192.168.1.142.nip.io
+      tailhost: loki.100.92.216.13.nip.io
+      service: loki
+      port: 3100
+    agent:
+      enabled: false
+      host: agent.192.168.1.142.nip.io
+      tailhost: agent.100.92.216.13.nip.io
+      service: llopster-agent
+      port: 8000
+    dashboard:
+      enabled: true
+      host: dashboard.192.168.1.142.nip.io
+      tailhost: dashboard.100.92.216.13.nip.io
+      service: llopster-dashboard
+      port: 8000
+
+# Dev cluster image-pull secret (ghcr.io). Credentials are still
+# overridden at install time by scripts/push-images.sh via $GHCR_USERNAME
+# / $GHCR_TOKEN.
+imagePullSecret:
+  enabled: true
+  name: regcred
+  registry: ghcr.io
+  username: replaceme
+  password: replaceme
+  email: replaceme
+
+# Dev cluster storage classes.
+postgresql:
+  primary:
+    persistence:
+      storageClass: local-path
+
+# BYO observability — point LLopster at the shared testbed-infra monitoring
+# stack (kube-prometheus-stack + Loki in the `monitoring` namespace) rather
+# than bundling its own Prometheus/Loki/AlertManager. See ~/dev/testbed-infra.
+#
+# The testbed's AlertManager forwards llopster_managed="true" alerts to
+# llopster-agent.llopster:8000/webhook (configured in testbed-infra), so
+# LLopster only needs the query endpoints below.
+prometheus:
+  bundled: false
+  url: http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090
+
+loki:
+  bundled: false
+  url: http://loki.monitoring.svc.cluster.local:3100
+
+# Opt into LLopster's starter-pack PrometheusRule (cross-cutting infra alerts
+# carrying llopster.io/* annotations). Exercises the CRD path against the
+# testbed's Prometheus Operator. The per-app rules (crash-loop scenarios)
+# come from each app's own chart.
+alertRules:
+  enabled: true
+
+# Dev-cluster services LLopster monitors. Each app is installed as its own
+# helm release from its own repo (~/dev/demo-app, ~/dev/order-service). What
+# LLopster needs here is the service → repo mapping (for PR routing) and the
+# init-container clone source (for the codebase blob sent to Claude).
+#
+# NOTE the two services target DIFFERENT repos — this is exactly the
+# decoupling the testbed proves: a demo-app alert must open its PR on
+# llmoki-demo-app, an order-service alert on order-service, never crossed.
+agent:
+  servicesConfig:
+    demo-app:
+      codebase_path: /codebases/demo-app
+      github_repo: synchrony-solutions/llmoki-demo-app
+    order-service:
+      codebase_path: /codebases/order-service
+      github_repo: synchrony-solutions/order-service
+  codebases:
+    - name: demo-app
+      gitRepo: https://github.com/synchrony-solutions/llmoki-demo-app.git
+      branch: main
+    - name: order-service
+      gitRepo: https://github.com/synchrony-solutions/order-service.git
+      branch: main

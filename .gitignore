@@ -1,0 +1,20 @@
+.env
+*.env
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.DS_Store
+.claude/
+data/
+*.db
+
+# Real helm secrets (never commit)
+helm-chart/values.secret.yaml
+secrets
+*.tgz
+helm-chart/secretvalues.yaml
+
+# License signing key — NEVER commit. Mints valid licenses.
+.license-signing-key.pem
+*.license-signing-key.pem

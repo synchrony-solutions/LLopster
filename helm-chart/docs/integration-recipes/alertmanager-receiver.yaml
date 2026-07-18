@@ -1,0 +1,55 @@
+# Paste this receiver + route into your existing AlertManager config to
+# forward alerts to LLopster.
+#
+# For kube-prometheus-stack: under `alertmanager.config:` in its values.yaml.
+# For a standalone AlertManager Helm release: under `config:` in its
+# values.yaml.
+#
+# Adjust:
+#   - The webhook URL's namespace if LLopster isn't installed in `llopster`.
+#   - The `matchers:` if you only want a subset of alerts forwarded.
+
+route:
+  # If your AlertManager already has a `route:`, add this as a child under
+  # `route.routes:` rather than replacing.
+  routes:
+    # First-match wins — put this BEFORE your catch-all so LLopster sees
+    # the alerts you want it to act on.
+    - receiver: llopster
+      group_by: ['alertname', 'service']
+      group_wait: 10s
+      group_interval: 30s
+      repeat_interval: 5m
+      # Only forward alerts tagged for LLopster. Tag the alerts you want
+      # LLopster to handle with `llopster_managed: "true"` in the rule's
+      # `labels:` block.
+      matchers:
+        - llopster_managed = "true"
+      # `continue: true` so the alert ALSO continues into your existing
+      # downstream receivers (PagerDuty, Slack, etc.). Drop this if you
+      # want LLopster to be the only recipient.
+      continue: true
+
+receivers:
+  - name: llopster
+    webhook_configs:
+      # In-cluster DNS for the LLopster agent's webhook. Adjust the
+      # namespace segment if LLopster isn't installed in `llopster`.
+      - url: http://llopster-agent.llopster.svc.cluster.local:8000/webhook
+        send_resolved: true
+        # Inbound auth: REQUIRED if you set LLOPSTER_API_TOKEN on the agent
+        # (the supported production default — the chart refuses to render an
+        # exposed install without it). Without this block AlertManager gets a
+        # 401 on every delivery and no incident is ever processed. Uncomment
+        # and point at a Secret holding the SAME value as the agent's
+        # LLOPSTER_API_TOKEN. Leave commented only for an explicitly
+        # unauthenticated local-eval deploy (agent.allowUnauthenticated=true).
+        #
+        # http_config:
+        #   authorization:
+        #     type: Bearer
+        #     # kube-prometheus-stack / Prometheus-Operator AlertManager:
+        #     credentials_file: /etc/alertmanager/secrets/llopster-api-token/token
+        #     # Plain AlertManager Helm release: use `credentials:` inline
+        #     # (or a templated secret) instead of credentials_file.
+        #     # credentials: "<same value as agent LLOPSTER_API_TOKEN>"

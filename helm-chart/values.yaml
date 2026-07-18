@@ -1,0 +1,576 @@
+# =============================================================================
+# LLopster — Helm chart values
+#
+# This chart deploys the LLopster agent + dashboard and (optionally) a
+# self-contained observability stack for evaluation. In production, most
+# users connect LLopster to their cluster's existing Prometheus + Loki +
+# AlertManager via the BYO toggles below.
+#
+# Install modes
+# -------------
+# - BUNDLED (POC / evaluation):
+#     prometheus.bundled: true
+#     loki.bundled: true
+#   The chart installs prometheus-community/prometheus + prometheus-community/
+#   alertmanager + grafana/loki and wires them to the agent automatically.
+#
+# - BYO observability (production — recommended):
+#     prometheus.bundled: false
+#     prometheus.url: http://<your-prom-svc>.<ns>.svc.cluster.local:9090
+#     loki.bundled: false
+#     loki.url: http://<your-loki-svc>.<ns>.svc.cluster.local:3100
+#   Then configure your existing AlertManager to send to LLopster's webhook
+#   (see helm-chart/docs/integration-recipes/alertmanager-receiver.yaml).
+#
+# - HYBRID (e.g. you have Prom but not Loki):
+#   Set each `bundled:` flag independently.
+#
+# Cluster-specific overrides
+# --------------------------
+# Storage classes, ingress hostnames, image-pull credentials, and dev-cluster
+# servicesConfig entries live in `values.dev.yaml` (gitignored from the
+# perspective of customer installs — they layer their own values on top).
+# Layered install:
+#
+#   helm upgrade llopster ./helm-chart \
+#     -f helm-chart/values.yaml \
+#     -f helm-chart/values.dev.yaml \    # only for the dev cluster
+#     -f helm-chart/values.secret.yaml
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Ingress — opt-in HTTP routes for cluster operators. Disabled by default;
+# the dashboard and agent webhook only need in-cluster DNS.
+# ---------------------------------------------------------------------------
+ingress:
+  className: ""
+  annotations: {}
+  services:
+    prometheus:
+      enabled: false
+      host: ""
+      tailhost: ""
+      service: prometheus-server
+      port: 80
+    alertmanager:
+      enabled: false
+      host: ""
+      tailhost: ""
+      service: alertmanager
+      port: 9093
+    loki:
+      enabled: false
+      host: ""
+      tailhost: ""
+      service: loki
+      port: 3100
+    agent:
+      enabled: false
+      host: ""
+      tailhost: ""
+      service: llopster-agent
+      port: 8000
+    dashboard:
+      enabled: false
+      host: ""
+      tailhost: ""
+      service: llopster-dashboard
+      port: 8000
+
+# ---------------------------------------------------------------------------
+# Image pull secret (e.g. ghcr.io for private packages). Set
+# imagePullSecret.enabled=false and clear the values if your images are
+# public.
+# ---------------------------------------------------------------------------
+imagePullSecret:
+  enabled: false
+  name: regcred
+  registry: ghcr.io
+  username: ""
+  password: ""
+  email: ""
+
+# ===========================================================================
+# Observability — Prometheus
+#
+# bundled: true  → chart installs prometheus-community/prometheus +
+#                  prometheus-community/alertmanager as subcharts. Useful for
+#                  evaluation and the local POC; not recommended for prod.
+# bundled: false → chart skips both subcharts; configure `url` to point at
+#                  your existing Prometheus query API. Wire your existing
+#                  AlertManager at LLopster's webhook via the
+#                  helm-chart/docs/integration-recipes/alertmanager-receiver.yaml
+#                  snippet.
+# ===========================================================================
+prometheus:
+  bundled: true
+  # Only consulted when bundled: false. Use the in-cluster DNS of your
+  # existing Prometheus query API.
+  # Example (kube-prometheus-stack default service name):
+  #   url: http://kube-prom-stack-kube-prome-prometheus.monitoring.svc.cluster.local:9090
+  url: ""
+
+  # Subchart values (consumed only when bundled: true).
+  alertmanager:
+    # Disable the embedded one — we deploy the standalone subchart below
+    # so the keys stay explicit.
+    enabled: false
+  prometheus-pushgateway:
+    enabled: false
+  kube-state-metrics:
+    enabled: true
+  prometheus-node-exporter:
+    enabled: true
+  server:
+    fullnameOverride: prometheus-server
+    global:
+      scrape_interval: 15s
+      evaluation_interval: 15s
+    retention: "15d"
+    persistentVolume:
+      enabled: true
+      size: 8Gi
+      accessModes:
+        - ReadWriteOnce
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 1000m
+        memory: 1Gi
+    service:
+      type: ClusterIP
+      servicePort: 80
+  serverFiles:
+    prometheus.yml:
+      alerting:
+        alertmanagers:
+          - static_configs:
+              - targets:
+                  - alertmanager:9093
+    # Minimal smoke-test alerts so a bundled-mode install fires something.
+    # Real alerts (per-service and cross-cutting) live in either:
+    #   - the per-service helm chart (e.g. demo-app's PrometheusRule), or
+    #   - LLopster's starter pack PrometheusRule (alertRules.enabled below)
+    # which only works under the Prometheus Operator. Bundled mode here is
+    # operator-less, so we ship two minimal rules inline.
+    alerting_rules.yml:
+      groups:
+        - name: llopster-bundled-smoketest
+          interval: 30s
+          rules:
+            - alert: AlwaysFiringDemoAlert
+              expr: vector(1)
+              for: 1m
+              labels:
+                severity: warning
+                service: demo
+              annotations:
+                summary: "Bundled-mode smoke test — alert plumbing reachable"
+                description: "Intentionally always firing so you can verify the agent receives webhook payloads end-to-end."
+
+            - alert: PrometheusTargetDown
+              expr: up == 0
+              for: 2m
+              labels:
+                severity: critical
+              annotations:
+                summary: "Prometheus target {{ $labels.job }} is down"
+                description: "Target {{ $labels.instance }} for job {{ $labels.job }} has been unreachable for 2 minutes."
+  extraScrapeConfigs: |
+    - job_name: loki
+      static_configs:
+        - targets:
+            - loki:3100
+
+# ===========================================================================
+# AlertManager — paired with bundled Prometheus.
+#
+# Riding behind prometheus.bundled by convention (no separate toggle); when
+# bundled Prometheus is off, the customer's existing AlertManager handles
+# routing and forwards to LLopster's webhook via the integration-recipes
+# snippet.
+# ===========================================================================
+alertmanager:
+  fullnameOverride: alertmanager
+  replicaCount: 1
+  persistence:
+    enabled: true
+    size: 1Gi
+    accessModes:
+      - ReadWriteOnce
+  service:
+    type: ClusterIP
+    port: 9093
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+  config:
+    global:
+      resolve_timeout: 5m
+    route:
+      receiver: agent-webhook
+      group_by: ['alertname', 'service']
+      group_wait: 10s
+      group_interval: 30s
+      repeat_interval: 5m
+    receivers:
+      - name: agent-webhook
+        webhook_configs:
+          - url: http://llopster-agent:8000/webhook
+            send_resolved: true
+    inhibit_rules: []
+    templates: []
+
+# ===========================================================================
+# Observability — Loki
+# bundled: true  → chart installs grafana/loki (single-binary mode).
+# bundled: false → chart skips the subchart; configure `url` to point at
+#                  your existing Loki query API.
+# ===========================================================================
+loki:
+  bundled: true
+  # Only consulted when bundled: false. Example for a customer's Loki:
+  #   url: http://loki.monitoring.svc.cluster.local:3100
+  url: ""
+
+  # Subchart values (consumed only when bundled: true).
+  fullnameOverride: loki
+  deploymentMode: SingleBinary
+  loki:
+    auth_enabled: false
+    commonConfig:
+      replication_factor: 1
+      path_prefix: /var/loki
+    storage:
+      type: filesystem
+    schemaConfig:
+      configs:
+        - from: "2024-01-01"
+          store: tsdb
+          object_store: filesystem
+          schema: v13
+          index:
+            prefix: index_
+            period: 24h
+    limits_config:
+      allow_structured_metadata: true
+      retention_period: 168h
+    rulerConfig:
+      alertmanager_url: http://alertmanager:9093
+    pattern_ingester:
+      enabled: false
+  singleBinary:
+    replicas: 1
+    persistence:
+      enabled: true
+      size: 10Gi
+      accessModes:
+        - ReadWriteOnce
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 1000m
+        memory: 1Gi
+  gateway:
+    enabled: false
+  read:
+    replicas: 0
+  write:
+    replicas: 0
+  backend:
+    replicas: 0
+  chunksCache:
+    enabled: false
+  resultsCache:
+    enabled: false
+  test:
+    enabled: false
+  lokiCanary:
+    enabled: false
+  monitoring:
+    selfMonitoring:
+      enabled: false
+      grafanaAgent:
+        installOperator: false
+    lokiCanary:
+      enabled: false
+    serviceMonitor:
+      enabled: false
+
+# ===========================================================================
+# LLopster-curated alert rules (starter pack)
+#
+# Ships a small set of cross-cutting infra alerts as a PrometheusRule CRD.
+# Each rule carries llopster.io/* annotations that the agent prompt can
+# surface for better patch quality (likely-files hints, runbook prose).
+#
+# IMPORTANT: requires the Prometheus Operator (kube-prometheus-stack). If
+# you're running raw Prometheus, paste the equivalent rules from
+# helm-chart/docs/integration-recipes/prometheus-rules-snippet.yaml into
+# your prometheus.yml manually instead.
+#
+# Default: off. Production teams almost always have their own alerting
+# regime; this is opt-in additive.
+# ===========================================================================
+alertRules:
+  enabled: false
+  # Operator's ruleSelector label set — kube-prometheus-stack defaults to
+  # {release: <kps-release-name>}. Adjust to match yours.
+  labels: {}
+  interval: 30s
+
+# ===========================================================================
+# PostgreSQL — shared DB for agent and dashboard. Deployed via
+# templates/postgres.yaml (official postgres:17-alpine image).
+# ===========================================================================
+postgresql:
+  enabled: true
+  fullnameOverride: llopster-postgres
+  global:
+    security:
+      allowInsecureImages: true
+  auth:
+    username: llopster
+    # CHANGEME — supply via values.secret.yaml at install time.
+    password: CHANGEME-app-password
+    database: llopster
+  image:
+    repository: postgres
+    tag: "17-alpine"
+    pullPolicy: IfNotPresent
+  primary:
+    persistence:
+      enabled: true
+      size: 5Gi
+      accessModes:
+        - ReadWriteOnce
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+
+# ---------------------------------------------------------------------------
+# llopster-agent (the FastAPI webhook + Claude orchestration service)
+# Templates: templates/llopster-agent.yaml
+# ---------------------------------------------------------------------------
+agent:
+  enabled: true
+
+  # Secure-by-default escape hatch. The chart REFUSES to render when an Ingress
+  # (agent or dashboard) is enabled but agent.secrets.LLOPSTER_API_TOKEN is
+  # empty — an exposed install would leave /webhook + trigger + settings
+  # UNAUTHENTICATED while holding a write-scoped GitHub PAT. Set this to true
+  # ONLY for an explicitly trusted / local-only deploy where you accept an
+  # unauthenticated inbound surface (the agent still logs a loud startup
+  # warning). The supported production path is to set LLOPSTER_API_TOKEN.
+  allowUnauthenticated: false
+
+  # Optional NetworkPolicy restricting who can reach the agent's webhook/API
+  # port (8000) to in-cluster sources. Opt-in: it only takes effect on a CNI
+  # that enforces NetworkPolicy, and a too-strict policy would drop AlertManager
+  # deliveries. The agent's OWN namespace is always allowed (the dashboard
+  # proxy + a same-namespace AlertManager); add the namespace your AlertManager
+  # (and, if you expose the trigger UI, your ingress controller) runs in.
+  networkPolicy:
+    enabled: false
+    allowedNamespaces: []
+    # Example (BYO observability in the `monitoring` namespace):
+    # allowedNamespaces:
+    #   - monitoring
+
+  image:
+    repository: ghcr.io/synchrony-solutions/llopster
+    # Empty ⇒ the template falls back to Chart.appVersion, so the default tag
+    # always matches a published release image (push-images.sh publishes the
+    # appVersion tag alongside `latest`). Set an explicit tag (e.g. a git SHA)
+    # to pin a specific build.
+    tag: ""
+    pullPolicy: IfNotPresent
+
+  replicas: 1
+
+  service:
+    type: ClusterIP
+    port: 8000
+
+  # Opt-in Prometheus Operator ServiceMonitor for the agent's /metrics endpoint
+  # (self-observability: run counts by status, backlog depth, trailing-day
+  # spend, cost-breaker state). Requires the Prometheus Operator CRDs
+  # (kube-prometheus-stack) in the cluster. Off by default so a cluster without
+  # the CRD still installs.
+  serviceMonitor:
+    enabled: false
+    # Scrape cadence.
+    interval: 30s
+    scrapeTimeout: 10s
+    # Extra labels so the Prometheus Operator's serviceMonitorSelector matches
+    # it (e.g. {release: kube-prometheus-stack}). Leave empty if your Operator
+    # selects all ServiceMonitors.
+    labels: {}
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+
+  # Security hardening. Defaults follow the restricted Pod Security Standard:
+  # run as a non-root UID, drop every Linux capability, forbid privilege
+  # escalation, and mount the root filesystem read-only (the template mounts a
+  # writable emptyDir at /tmp and sets HOME=/tmp for the few libs that need
+  # scratch space). Safe with the chart default postgresql.enabled=true, which
+  # routes the DB to PostgreSQL (no SQLite file written under /app). If you set
+  # postgresql.enabled=false you MUST point DATABASE_URL at an external DB —
+  # the SQLite fallback writes to /app/data and would fail on a read-only root.
+  # Override per-field if your environment mandates a specific UID/GID.
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop:
+        - ALL
+
+  # Non-secret env vars. PROMETHEUS_URL and LOKI_URL are no longer set
+  # here — they're derived from the top-level `prometheus` and `loki`
+  # blocks (bundled svc DNS when bundled: true, the .url field otherwise).
+  env:
+    SERVICE: agent
+    ANTHROPIC_MODEL: claude-opus-4-7
+    PATCH_CONFIDENCE_THRESHOLD: "4"
+    LOG_LOOKBACK_MINUTES: "30"
+    MAX_LOG_LINES: "200"
+    SERVICES_CONFIG: /etc/llopster/services.yaml
+    # Least-privilege posture: open LLM-authored PRs as drafts for human
+    # review. Set to "false" to open ready-for-review PRs (also overridable
+    # at runtime via the dashboard Settings page).
+    OPEN_PRS_AS_DRAFT: "true"
+    # Automatic cost circuit breaker. When the runs-created-per-hour or the
+    # estimated synthesis spend-per-day reaches one of these ceilings, the
+    # agent trips into manual mode (new alerts park at `queued`) and stops
+    # spending until an operator intervenes. 0 = disabled (the default — set
+    # values tuned to your alert volume / budget). Runtime-overridable via the
+    # dashboard Settings page.
+    MAX_RUNS_PER_HOUR: "0"
+    MAX_USD_PER_DAY: "0"
+    # Loki stream labels probed (in order) to scope a log query to the
+    # alerting workload — first one present on the alert wins. Override to
+    # match how your log collector labels streams. Defaults cover Grafana
+    # Alloy / Promtail with raw `app`, the `app.kubernetes.io/*` recommended
+    # set, and the bare k8s identifiers. See the Alloy recipe in
+    # docs/integration-recipes/alloy-logs.alloy for the matching collector
+    # config.
+    LOG_SCOPE_LABELS: "service,app,app_kubernetes_io_name,app_kubernetes_io_instance,container,pod,namespace,job"
+
+  # CHANGEME — placeholders, edit before installing. Stored in a k8s Secret.
+  secrets:
+    ANTHROPIC_API_KEY: CHANGEME-anthropic-api-key
+    SLACK_WEBHOOK_URL: CHANGEME-https://hooks.slack.com/services/...
+    GITHUB_TOKEN: CHANGEME-github-pat
+    GITHUB_REPO: CHANGEME-owner/repo
+    # Shared secret guarding the inbound write surfaces (/webhook, trigger,
+    # settings/license). EMPTY = auth DISABLED (a loud startup warning is
+    # logged) — fine for local eval, but set a strong random value before
+    # exposing the agent or dashboard on any untrusted network. AlertManager
+    # must then send it as a bearer token; the dashboard reads the same secret
+    # to authenticate its server-side proxy calls to the agent. A value pasted
+    # in the dashboard (Settings → API access) overrides this at runtime.
+    LLOPSTER_API_TOKEN: ""
+    # Signed license JWT (paid tiers). Leave empty for the Community tier —
+    # an empty key gates nothing and is the correct default for every
+    # Community install. A key pasted in the dashboard (Settings → License)
+    # overrides this at runtime without a redeploy. See src/agent/license.py.
+    LLOPSTER_LICENSE_KEY: ""
+
+  # Per-service registry. Each key matches the `service` label on an alert;
+  # `github_repo` is the repo LLopster opens PRs against; `codebase_path` is
+  # where the agent reads source from (populated by the init-container
+  # codebases clone below).
+  #
+  # Empty by default. Customer installs add their services here.
+  servicesConfig: {}
+  # Example:
+  # servicesConfig:
+  #   payments-api:
+  #     codebase_path: /codebases/payments-api
+  #     github_repo: my-org/payments-api
+
+  # Init-container codebase clones — populates /codebases/<name> before
+  # the agent starts. Each entry: name (matches servicesConfig key),
+  # gitRepo, branch (optional, default "main").
+  codebases: []
+  # Example:
+  # codebases:
+  #   - name: payments-api
+  #     gitRepo: https://github.com/my-org/payments-api.git
+  #     branch: main
+
+# ---------------------------------------------------------------------------
+# llopster-dashboard (read-only UI — survives agent crash loops)
+# Templates: templates/llopster-dashboard.yaml
+# ---------------------------------------------------------------------------
+dashboard:
+  enabled: true
+
+  image:
+    repository: ghcr.io/synchrony-solutions/llopster
+    # Empty ⇒ the template falls back to Chart.appVersion, so the default tag
+    # always matches a published release image (push-images.sh publishes the
+    # appVersion tag alongside `latest`). Set an explicit tag (e.g. a git SHA)
+    # to pin a specific build.
+    tag: ""
+    pullPolicy: IfNotPresent
+
+  replicas: 1
+
+  service:
+    type: ClusterIP
+    port: 8000
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+  # Security hardening — see the agent block above for rationale. The dashboard
+  # is read-only and writes nothing to disk beyond /tmp scratch, so the
+  # read-only root filesystem applies cleanly.
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop:
+        - ALL
+
+  env:
+    SERVICE: dashboard
+    AGENT_URL: http://llopster-agent:8000

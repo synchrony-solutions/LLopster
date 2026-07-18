@@ -1,0 +1,138 @@
+{% extends "base.html" %}
+{% block title %}Diagnostics — llopster{% endblock %}
+{% block content %}
+
+<div class="page-header">
+    <h2>System Diagnostics</h2>
+    <span class="muted">Readable even when the agent is in crash loop</span>
+</div>
+
+{# ---- Agent Status ---- #}
+<section class="section">
+    <h3>Agent</h3>
+    <div class="body">
+        <dl class="kv">
+            <dt>Status</dt>
+            <dd>
+                <span id="agent-status-diag"
+                      hx-get="/api/agent-status"
+                      hx-trigger="load, every 15s"
+                      hx-swap="innerHTML">
+                    <span class="muted">checking…</span>
+                </span>
+            </dd>
+            <dt>Last heartbeat</dt>
+            <dd>
+                {% if heartbeat_raw %}
+                    {{ heartbeat_raw }}
+                    {% if heartbeat_age_s is not none %}
+                        <span class="muted">({{ (heartbeat_age_s / 60) | round(1) }} min ago)</span>
+                    {% endif %}
+                {% else %}
+                    <span class="muted">No heartbeat recorded — agent may not have started or is not writing heartbeats.</span>
+                {% endif %}
+            </dd>
+            {% if agent_url %}
+            <dt>Agent URL</dt>
+            <dd><a href="{{ agent_url }}" target="_blank" rel="noopener"><code>{{ agent_url }}</code></a></dd>
+            {% endif %}
+        </dl>
+    </div>
+</section>
+
+{# ---- Database ---- #}
+<section class="section">
+    <h3>Database</h3>
+    <div class="body">
+        <dl class="kv">
+            <dt>Connection</dt>
+            <dd>
+                {% if db_ok %}
+                <span class="pill pill-done">✓ Connected</span>
+                {% else %}
+                <span class="pill pill-failed">✗ Unreachable</span>
+                {% endif %}
+            </dd>
+            <dt>Endpoint</dt>
+            <dd><code>{{ db_url_display }}</code></dd>
+            <dt>Total runs</dt>
+            <dd>{{ total_runs }}</dd>
+        </dl>
+    </div>
+</section>
+
+{# ---- Recent Failures ---- #}
+<section class="section">
+    <h3>Recent failures</h3>
+    <div class="body">
+        {% if recent_failures %}
+        <table class="runs">
+            <thead>
+                <tr><th>Run ID</th><th>Alert</th><th>Service</th><th>Error</th><th>Time</th></tr>
+            </thead>
+            <tbody>
+                {% for r in recent_failures %}
+                <tr onclick="window.location.href='/runs/{{ r.id }}'">
+                    <td class="mono"><code>{{ r.id[:8] }}…</code></td>
+                    <td>{{ r.alertname }}</td>
+                    <td>{{ r.service or '—' }}</td>
+                    <td style="max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                        {{ r.error_message or '—' }}
+                    </td>
+                    <td class="muted">{{ r.received_at | dt }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <div class="muted">No failed runs in the last 50 records.</div>
+        {% endif %}
+    </div>
+</section>
+
+{# ---- Runtime Settings ---- #}
+<section class="section">
+    <h3>Runtime settings (DB overrides)</h3>
+    <div class="body">
+        {% if settings %}
+        <table class="runs">
+            <thead><tr><th>Key</th><th>Value</th></tr></thead>
+            <tbody>
+                {% for k, v in settings.items() %}
+                <tr>
+                    <td><code>{{ k }}</code></td>
+                    <td>
+                        {% if 'key' in k.lower() or 'token' in k.lower() or 'secret' in k.lower() %}
+                        <span class="muted">••••••••</span>
+                        {% else %}
+                        {{ v }}
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <div class="muted">No runtime overrides stored.</div>
+        {% endif %}
+    </div>
+</section>
+
+{# ---- Pod / Host Info ---- #}
+<section class="section">
+    <h3>Deployment info</h3>
+    <div class="body">
+        <dl class="kv">
+            <dt>Pod name</dt><dd><code>{{ pod_info.pod_name }}</code></dd>
+            <dt>Node</dt><dd><code>{{ pod_info.node_name }}</code></dd>
+            <dt>Namespace</dt><dd><code>{{ pod_info.namespace }}</code></dd>
+        </dl>
+        <div class="muted" style="margin-top: 12px; font-size: 12px;">
+            Pod/node fields are populated when the Helm chart injects
+            <code>POD_NAME</code>, <code>NODE_NAME</code>, <code>POD_NAMESPACE</code>
+            via the Downward API. They show — in local dev.
+        </div>
+    </div>
+</section>
+
+{% endblock %}

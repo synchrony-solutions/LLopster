@@ -1,0 +1,156 @@
+{% extends "base.html" %}
+{% block title %}Manual Trigger — llopster{% endblock %}
+{% block content %}
+
+<div class="page-header">
+    <h2>Manual Trigger</h2>
+    <span class="muted">Replay a past alert or synthesize a new one</span>
+</div>
+
+{% if processing_mode == 'manual' %}
+<div class="error-banner" style="color: var(--yellow); background: var(--yellow-soft); border-color: var(--yellow); margin-bottom: 16px;">
+    <strong>Manual mode is on.</strong> Incoming AlertManager webhooks are being parked at <code>queued</code> instead of being processed automatically. Toggle this in <a href="/settings">Settings</a>.
+</div>
+{% endif %}
+
+{% if queued_runs %}
+<div style="margin-bottom: 24px;">
+    <h3 style="margin: 0 0 8px 0;">Queued runs ({{ queued_runs | length }})</h3>
+    <p class="muted" style="margin: 0 0 12px 0;">
+        Webhooks received while the agent was in manual mode. Process each one through the full pipeline when ready.
+    </p>
+    <table class="runs-table">
+        <thead>
+            <tr>
+                <th>Received</th>
+                <th>Alert</th>
+                <th>Service</th>
+                <th>Severity</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for r in queued_runs %}
+            <tr>
+                <td>{{ r.received_at | dt }}</td>
+                <td>{{ r.alertname }}</td>
+                <td>{{ r.service or '—' }}</td>
+                <td><span class="{{ severity_class(r.severity) }}">{{ r.severity or '—' }}</span></td>
+                <td>
+                    <form method="post" action="/trigger/dispatch/{{ r.id }}" style="display:inline;">
+                        <button type="submit" class="trigger-btn-primary">▶ Process</button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
+{# CSS tab switcher — no JS, uses radio:checked + sibling selector #}
+<input type="radio" name="tab" id="tab-replay" class="tab-input" checked>
+<input type="radio" name="tab" id="tab-synthesize" class="tab-input">
+
+<div class="trigger-tabs-wrap">
+    <div class="trigger-tab-nav">
+        <label for="tab-replay" class="trigger-tab-label">↺ Replay</label>
+        <label for="tab-synthesize" class="trigger-tab-label">✦ Synthesize</label>
+    </div>
+
+    <div class="trigger-tab-panels">
+
+        {# ---- Replay panel ---- #}
+        <div class="trigger-tab-panel panel-replay">
+            <p class="muted" style="margin: 0 0 16px 0;">
+                Select a past run to re-run its alert through the full pipeline with a fresh Claude call.
+            </p>
+            <form method="post" action="{{ url_for('trigger_submit') }}">
+                <input type="hidden" name="mode" value="replay">
+                <div class="trigger-form-grid">
+                    <label class="trigger-label">
+                        Source run
+                        <select name="replay_run_id" class="trigger-input" required>
+                            <option value="" disabled selected>— pick a run —</option>
+                            {% for r in recent_runs %}
+                            <option value="{{ r.id }}">
+                                [{{ r.received_at | dt }}] {{ r.alertname }} ({{ r.service or '?' }}) — {{ r.processing_status }}
+                            </option>
+                            {% endfor %}
+                        </select>
+                    </label>
+                    <label class="trigger-label">
+                        Log lookback
+                        <select name="lookback_minutes" class="trigger-input">
+                            <option value="">Default ({{ 30 }} min)</option>
+                            <option value="15">15 min</option>
+                            <option value="30">30 min</option>
+                            <option value="60">60 min</option>
+                            <option value="120">120 min</option>
+                        </select>
+                    </label>
+                </div>
+                <div class="trigger-actions">
+                    <button type="submit" class="trigger-btn-primary">▶ Run pipeline</button>
+                </div>
+            </form>
+        </div>
+
+        {# ---- Synthesize panel ---- #}
+        <div class="trigger-tab-panel panel-synthesize">
+            <p class="muted" style="margin: 0 0 16px 0;">
+                Build a synthetic alert from scratch. The pipeline will collect real logs &amp; metrics for the chosen service.
+            </p>
+            <form method="post" action="{{ url_for('trigger_submit') }}">
+                <input type="hidden" name="mode" value="synthesize">
+                <div class="trigger-form-grid">
+                    <label class="trigger-label">
+                        Service *
+                        <select name="service" class="trigger-input" required>
+                            <option value="" disabled selected>— pick a service —</option>
+                            {% for s in services %}
+                            <option value="{{ s }}">{{ s }}</option>
+                            {% endfor %}
+                        </select>
+                    </label>
+                    <label class="trigger-label">
+                        Alert name *
+                        <input type="text" name="alertname" class="trigger-input" placeholder="e.g. HelmValuesMisconfigured" required>
+                    </label>
+                    <label class="trigger-label">
+                        Severity
+                        <select name="severity" class="trigger-input">
+                            <option value="warning" selected>warning</option>
+                            <option value="critical">critical</option>
+                            <option value="info">info</option>
+                        </select>
+                    </label>
+                    <label class="trigger-label">
+                        Log lookback
+                        <select name="lookback_minutes" class="trigger-input">
+                            <option value="">Default (30 min)</option>
+                            <option value="15">15 min</option>
+                            <option value="30">30 min</option>
+                            <option value="60">60 min</option>
+                            <option value="120">120 min</option>
+                        </select>
+                    </label>
+                    <label class="trigger-label" style="grid-column: span 2;">
+                        Summary
+                        <input type="text" name="summary" class="trigger-input" placeholder="One-line description of the issue">
+                    </label>
+                    <label class="trigger-label" style="grid-column: span 2;">
+                        Description
+                        <textarea name="description" class="trigger-input trigger-textarea" placeholder="Additional context for Claude…" rows="3"></textarea>
+                    </label>
+                </div>
+                <div class="trigger-actions">
+                    <button type="submit" class="trigger-btn-primary">▶ Run pipeline</button>
+                </div>
+            </form>
+        </div>
+
+    </div>{# .trigger-tab-panels #}
+</div>{# .trigger-tabs-wrap #}
+
+{% endblock %}

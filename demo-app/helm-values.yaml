@@ -1,0 +1,12 @@
+# Helm values for demo-app deployment.
+resources:
+  limits:
+    memory: "512MBz"
+    cpu: "500m"
+  requests:
+    memory: "256Mi"
+    cpu: "250m"
+replicas: 2
+image:
+  repository: demo-app
+  tag: "1.0.0"

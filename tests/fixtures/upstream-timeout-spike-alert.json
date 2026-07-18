@@ -1,0 +1,40 @@
+{
+  "version": "4",
+  "groupKey": "{}:{alertname=\"UpstreamTimeoutSpike\"}",
+  "status": "firing",
+  "receiver": "agent-webhook",
+  "groupLabels": {
+    "alertname": "UpstreamTimeoutSpike"
+  },
+  "commonLabels": {
+    "alertname": "UpstreamTimeoutSpike",
+    "severity": "warning",
+    "service": "demo-app"
+  },
+  "commonAnnotations": {
+    "summary": "demo-app downstream calls timing out",
+    "description": "Most upstream HTTP calls are timing out and burning the full retry budget."
+  },
+  "externalURL": "http://localhost:9093",
+  "alerts": [
+    {
+      "status": "firing",
+      "labels": {
+        "alertname": "UpstreamTimeoutSpike",
+        "severity": "warning",
+        "service": "demo-app",
+        "namespace": "default",
+        "pod": "demo-app-7c9b4d-xk2lp",
+        "component": "upstream"
+      },
+      "annotations": {
+        "summary": "demo-app downstream calls timing out",
+        "description": "demo-app saw a spike of upstream timeouts in the last 2 minutes. Investigate timeout/retry configuration or upstream availability."
+      },
+      "startsAt": "2026-04-18T10:00:00.000Z",
+      "endsAt": "0001-01-01T00:00:00Z",
+      "generatorURL": "http://localhost:9090/graph?g0.expr=increase%28demo_app_upstream_timeout_total%5B2m%5D%29%20%3E%2010&g0.tab=1",
+      "fingerprint": "up01stream02timeout03"
+    }
+  ]
+}

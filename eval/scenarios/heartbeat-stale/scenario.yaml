@@ -1,0 +1,47 @@
+id: heartbeat-stale
+description: >-
+  demo-app's scheduler heartbeat interval is set to 86400s (a day) instead of a
+  minute, so the heartbeat age trips the staleness alert. This is also the
+  triage false-negative case: an app-internal heartbeat going stale is a real
+  incident (proceed), NOT the monitoring pipeline's own watchdog (skip). The fix
+  is the interval constant in check_scheduler.py.
+
+alert:
+  version: "4"
+  status: firing
+  receiver: agent-webhook
+  groupLabels:
+    alertname: HeartbeatStale
+  alerts:
+    - status: firing
+      labels:
+        alertname: HeartbeatStale
+        severity: warning
+        service: demo-app
+        namespace: default
+        pod: demo-app-7c9b4d-xk2lp
+        component: scheduler
+      annotations:
+        summary: demo-app scheduler heartbeat stale
+        description: >-
+          demo-app heartbeat age has exceeded 300s. The background scheduler is
+          not firing on its expected interval.
+      startsAt: "2026-04-18T10:00:00.000Z"
+      endsAt: "0001-01-01T00:00:00Z"
+      generatorURL: "http://localhost:9090/graph?g0.expr=demo_app_heartbeat_age_seconds%20%3E%20300&g0.tab=1"
+      fingerprint: heartbeat01stale02scheduler03
+
+recorded_context:
+  log_lines:
+    - line: "WARN scheduler: heartbeat age 86400s exceeds threshold 300s — background scheduler not firing on interval"
+      labels: {service: demo-app, component: scheduler, level: warning}
+    - line: "WARN scheduler: last tick was >24h ago; HEARTBEAT_INTERVAL_SECONDS looks misconfigured"
+      labels: {service: demo-app, component: scheduler, level: warning}
+  metric_samples:
+    - metric: {__name__: demo_app_heartbeat_age_seconds, service: demo-app}
+      value: 86400
+
+ground_truth:
+  expect_patch: true
+  expected_files: [check_scheduler.py]
+  root_cause_keywords: [heartbeat, interval, HEARTBEAT_INTERVAL_SECONDS, scheduler]

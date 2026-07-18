@@ -1,0 +1,72 @@
+{# Renders the table fragment. Auto-polls every 2s while any row is non-terminal.
+   The wrapper carries the hx-trigger; on terminal-only states it omits the
+   trigger so polling stops naturally. #}
+{% set has_active = items | selectattr('processing_status', 'in', ['pending', 'collecting', 'generating', 'posting']) | list | length > 0 %}
+
+<div id="runs-table-wrap"
+     {% if has_active %}
+     hx-get="{{ url_for('runs_table_partial') }}{{ filter_qs }}"
+     hx-trigger="every 2s"
+     hx-swap="outerHTML"
+     {% endif %}>
+    {% if has_active %}
+        <div class="muted" style="margin-bottom: 8px;"><span class="live-dot"></span>Live — polling every 2s while runs are in progress</div>
+    {% endif %}
+
+    {% if items %}
+    <table class="runs">
+        <thead>
+            <tr>
+                <th>Time</th>
+                <th>Alert</th>
+                <th>Service</th>
+                <th>Severity</th>
+                <th>Status</th>
+                <th>Confidence</th>
+                <th>Label</th>
+                <th>PR</th>
+                <th>Slack</th>
+                <th>Source</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for r in items %}
+            <tr onclick="window.location.href='{{ url_for('run_detail', run_id=r.id) }}'">
+                <td class="mono">{{ r.received_at | dt }}</td>
+                <td>{{ r.alertname }}</td>
+                <td>{{ r.service or '—' }}</td>
+                <td>{% if r.severity %}<span class="{{ severity_class(r.severity) }}">{{ r.severity }}</span>{% else %}—{% endif %}</td>
+                <td><span class="{{ status_class(r.processing_status) }}">{{ r.processing_status }}</span></td>
+                <td>{% if r.confidence is not none %}<span class="{{ confidence_class(r.confidence) }}">{{ r.confidence }}/5</span>{% else %}—{% endif %}</td>
+                <td>{% if r.operator_label %}<span class="{{ operator_label_class(r.operator_label) }}">{{ operator_label_text(r.operator_label) }}</span>{% else %}—{% endif %}</td>
+                <td>
+                    {% if r.pr_opened and r.pr_url %}
+                        <a href="{{ r.pr_url }}" target="_blank" rel="noopener" class="pill pill-pr" onclick="event.stopPropagation()">#{{ r.pr_url.rstrip('/').split('/')[-1] }}</a>
+                    {% else %}—{% endif %}
+                </td>
+                <td>{% if r.slack_notified %}✓{% else %}—{% endif %}</td>
+                <td class="muted">{{ r.trigger_source }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    <div class="pagination">
+        <span>Showing {{ offset + 1 }}–{{ offset + items | length }} of {{ total }}</span>
+        <span>
+            <a href="{{ prev_href }}" class="{% if not has_prev %}disabled{% endif %}">← Previous</a>
+            <a href="{{ next_href }}" class="{% if not has_next %}disabled{% endif %}">Next →</a>
+        </span>
+    </div>
+    {% else %}
+    <div class="empty">
+        <div>No runs yet.</div>
+        <div style="margin-top: 8px;">Fire a fixture or wait for AlertManager:</div>
+        <pre>curl -s -X POST http://localhost:8000/webhook \
+  -H "Content-Type: application/json" \
+  -d "$(jq --arg ts "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" \
+       '.alerts[0].startsAt = $ts' \
+       tests/fixtures/sample-alert.json)"</pre>
+    </div>
+    {% endif %}
+</div>

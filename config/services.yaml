@@ -1,0 +1,15 @@
+# Service registry — maps the `service` label on incoming alerts to:
+#   codebase_path: local directory containing the service's source code
+#   github_repo:   "owner/repo" the agent should open PRs against
+#
+# The agent looks up `alert.service` in this file. If a service is missing,
+# patch generation is skipped with a warning (no global fallback).
+#
+# Optional per-service field:
+#   pack: <stack>   selects a premium prompt pack (e.g. "jvm", "postgres") for
+#                   this service. Requires the pack to be mounted under
+#                   LLOPSTER_PACKS_DIR and entitled via LLOPSTER_PACK_TOKEN —
+#                   entitlement-gated. Absent = Community prompts (default).
+demo-app:
+  codebase_path: ../demo-app
+  github_repo: synchrony-solutions/llmoki-demo-app

@@ -1,0 +1,337 @@
+{% extends "base.html" %}
+{% block title %}Settings — llopster{% endblock %}
+{% block content %}
+
+<div class="page-header">
+    <h2>Settings</h2>
+    <span class="muted">Pipeline configuration — changes take effect on the next run</span>
+</div>
+
+{% if request.query_params.get('saved') %}
+<div class="error-banner" style="color: var(--green); background: var(--green-soft); border-color: var(--green); margin-bottom: 16px;">
+    ✓ Settings saved.
+</div>
+{% endif %}
+
+{# ---- License card ---- #}
+<div class="connection-row" style="flex-wrap: wrap; gap: 12px;">
+    <div class="connection-info">
+        <div class="conn-name">License</div>
+        <div class="conn-detail">
+            {% if license.agent_down %}
+                <em>Agent unreachable — license status unavailable.</em>
+                {% if not agent_url %} Set <code>AGENT_URL</code> on the dashboard pod.{% endif %}
+            {% else %}
+                Tier: <strong>{{ license.tier }}</strong>
+                {% if license.source == 'license' %}
+                    · <span class="test-result test-ok">✓ active</span>
+                    {% if license.expires_at %} · expires {{ license.expires_at[:10] }}{% endif %}
+                    {% if license.clusters %} · {{ license.clusters }} cluster(s){% endif %}
+                    {% if license.license_id %} · <code>{{ license.license_id }}</code>{% endif %}
+                    {% if license.features %}<div class="settings-hint" style="margin-top:4px;">Features: {{ license.features|join(', ') }}</div>{% endif %}
+                {% elif license.source == 'invalid' %}
+                    · <span class="test-result test-err">⚠ key rejected ({{ license.reason }}) — running Community</span>
+                {% else %}
+                    · <span class="muted">Community (no paid features)</span>
+                {% endif %}
+            {% endif %}
+        </div>
+    </div>
+</div>
+<form method="post" action="{{ url_for('settings_license_save') }}" class="settings-form-group" style="margin-bottom: 20px;">
+    <label class="settings-label" for="id-license-key">License key</label>
+    <div class="settings-hint">
+        Paste a signed license key (JWT) to unlock paid features without a redeploy. This
+        overrides the <code>LLOPSTER_LICENSE_KEY</code> environment variable; leave blank
+        and save to clear the override and fall back to the env var (or Community).
+    </div>
+    <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:6px;">
+        <input
+            type="password" id="id-license-key"
+            name="license_key"
+            placeholder="eyJhbGciOiJFZERTQSJ9…"
+            autocomplete="off"
+            class="settings-input"
+            style="flex:1; min-width:280px; max-width:520px;">
+        <button type="submit" class="settings-btn">Apply license</button>
+    </div>
+</form>
+
+{# ---- API access (inbound-auth shared secret) ---- #}
+<div class="connection-row" style="flex-wrap: wrap; gap: 12px;">
+    <div class="connection-info">
+        <div class="conn-name">API access</div>
+        <div class="conn-detail">
+            {% if auth_configured %}
+                <span class="test-result test-ok">✓ auth enabled</span> — the webhook, trigger, and settings routes require a shared secret.
+            {% else %}
+                <span class="test-result test-err">⚠ auth disabled</span> — inbound surfaces are <strong>unauthenticated</strong>. Set a token before exposing this beyond a trusted network.
+            {% endif %}
+        </div>
+    </div>
+</div>
+<form method="post" action="{{ url_for('settings_api_token_save') }}" class="settings-form-group" style="margin-bottom: 20px;">
+    <label class="settings-label" for="id-api-token">API access token</label>
+    <div class="settings-hint">
+        Shared secret guarding <code>/webhook</code>, the trigger routes, and these settings.
+        Overrides the <code>LLOPSTER_API_TOKEN</code> environment variable; leave blank and
+        save to clear the override. Clients (AlertManager, curl) send it as
+        <code>Authorization: Bearer &lt;token&gt;</code>. <strong>Once set, changing it again
+        requires the current token</strong> — set it the first time while auth is still disabled.
+    </div>
+    <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:6px;">
+        <input
+            type="password" id="id-api-token"
+            name="api_auth_token"
+            placeholder="a long random string"
+            autocomplete="off"
+            class="settings-input"
+            style="flex:1; min-width:280px; max-width:520px;">
+        <button type="submit" class="settings-btn">Apply token</button>
+    </div>
+</form>
+
+{# CSS tab switcher #}
+<input type="radio" name="stab" id="stab-general" class="tab-input" checked>
+<input type="radio" name="stab" id="stab-connections" class="tab-input">
+
+<div class="settings-tabs-wrap">
+    <div class="settings-tab-nav">
+        <label for="stab-general" class="settings-tab-label">⚙ General</label>
+        <label for="stab-connections" class="settings-tab-label">🔌 Connections</label>
+    </div>
+
+    {# ---- General tab ---- #}
+    <div class="settings-tab-panel panel-general">
+        <form method="post" action="{{ url_for('settings_save') }}">
+            <div class="settings-form-group">
+                <label class="settings-label">Processing mode</label>
+                <div class="settings-hint">
+                    <strong>Autopilot</strong> processes every incoming AlertManager webhook immediately.
+                    <strong>Manual</strong> parks incoming alerts as <code>queued</code> runs — operators dispatch them from the agent's Trigger UI{% if agent_url %} (<a href="{{ agent_url }}/trigger" target="_blank" rel="noopener">{{ agent_url }}/trigger ↗</a>){% else %} (set <code>AGENT_URL</code> env on the dashboard pod to expose a clickable link){% endif %}. Use Manual when the agent is unexpectedly burning tokens.
+                </div>
+                <div style="display: flex; gap: 16px; margin-top: 4px;">
+                    <label style="display: flex; gap: 6px; align-items: center; cursor: pointer;">
+                        <input type="radio" name="processing_mode" value="{{ mode_autopilot }}"
+                               {% if processing_mode == mode_autopilot %}checked{% endif %}>
+                        Autopilot
+                    </label>
+                    <label style="display: flex; gap: 6px; align-items: center; cursor: pointer;">
+                        <input type="radio" name="processing_mode" value="{{ mode_manual }}"
+                               {% if processing_mode == mode_manual %}checked{% endif %}>
+                        Manual
+                    </label>
+                </div>
+            </div>
+
+            <div class="settings-form-group">
+                <label class="settings-label" for="id-confidence">Patch confidence threshold</label>
+                <div class="settings-hint">Minimum confidence score (1–5) required to open a PR. Lower = more PRs, higher = fewer but more certain.</div>
+                <input
+                    type="number" id="id-confidence"
+                    name="patch_confidence_threshold"
+                    min="1" max="5"
+                    value="{{ confidence_threshold }}"
+                    class="settings-input"
+                    style="max-width: 80px;">
+            </div>
+
+            <div class="settings-form-group">
+                <label class="settings-label" for="id-lookback">Log lookback (minutes)</label>
+                <div class="settings-hint">How far back to query Loki for logs when an alert fires. Applies to all auto-triggered and manually triggered runs.</div>
+                <input
+                    type="number" id="id-lookback"
+                    name="log_lookback_minutes"
+                    min="5" max="1440"
+                    value="{{ log_lookback }}"
+                    class="settings-input"
+                    style="max-width: 100px;">
+            </div>
+
+            <div class="settings-form-group">
+                <label class="settings-label">Triage gate (Haiku pre-flight)</label>
+                <div class="settings-hint">
+                    A cheap Haiku call decides whether each alert is worth the full Opus pipeline. Critical-severity alerts bypass triage entirely. Disable this if Haiku is rejecting alerts you want processed.
+                </div>
+                <label style="display: flex; gap: 6px; align-items: center; cursor: pointer; margin-top: 6px;">
+                    <input type="checkbox" name="triage_enabled" value="true"
+                           {% if triage_enabled %}checked{% endif %}>
+                    Enable triage gate
+                </label>
+            </div>
+
+            <div class="settings-form-group">
+                <label class="settings-label" for="id-triage-model">Triage model</label>
+                <div class="settings-hint">Anthropic model used for the triage call. Defaults to <code>claude-haiku-4-5</code>; override to escalate to Sonnet if Haiku misclassifies too aggressively.</div>
+                <input
+                    type="text" id="id-triage-model"
+                    name="triage_model"
+                    value="{{ triage_model }}"
+                    class="settings-input"
+                    style="max-width: 260px;">
+            </div>
+
+            <div class="settings-form-group">
+                <label class="settings-label" for="id-triage-min-confidence">Triage skip threshold</label>
+                <div class="settings-hint">Minimum Haiku confidence (1–5) required to actually skip. Decisions below this fall through to the full pipeline — set higher to be more conservative.</div>
+                <input
+                    type="number" id="id-triage-min-confidence"
+                    name="triage_min_confidence"
+                    min="1" max="5"
+                    value="{{ triage_min_confidence }}"
+                    class="settings-input"
+                    style="max-width: 80px;">
+            </div>
+
+            <div class="settings-form-group">
+                <label class="settings-label">Investigation (Sonnet diagnosis)</label>
+                <div class="settings-hint">
+                    After Loki/Prom collection, a Sonnet call reads the alert + logs + metrics + codebase outline (no contents) and produces a root-cause hypothesis plus a list of likely-affected files. In Phase B this is recorded on the Run row for visibility; Phase C will use the affected-files list to narrow Opus's prompt. Fails-open: if the call errors, synthesis still runs against the full codebase.
+                </div>
+                <label style="display: flex; gap: 6px; align-items: center; cursor: pointer; margin-top: 6px;">
+                    <input type="checkbox" name="investigation_enabled" value="true"
+                           {% if investigation_enabled %}checked{% endif %}>
+                    Enable investigation stage
+                </label>
+            </div>
+
+            <div class="settings-form-group">
+                <label class="settings-label" for="id-investigation-model">Investigation model</label>
+                <div class="settings-hint">Anthropic model used for the investigation call. Defaults to <code>claude-sonnet-4-6</code>.</div>
+                <input
+                    type="text" id="id-investigation-model"
+                    name="investigation_model"
+                    value="{{ investigation_model }}"
+                    class="settings-input"
+                    style="max-width: 260px;">
+            </div>
+
+            <div class="settings-form-group">
+                <label class="settings-label" for="id-retention">Run retention (days)</label>
+                <div class="settings-hint">How long to keep Run rows before the background pruner deletes them. <strong>0 disables pruning</strong> entirely (rows kept forever — watch dashboard load times grow over time).</div>
+                <input
+                    type="number" id="id-retention"
+                    name="run_retention_days"
+                    min="0" max="1825"
+                    value="{{ retention_days }}"
+                    class="settings-input"
+                    style="max-width: 100px;">
+            </div>
+
+            <div class="settings-form-group">
+                <label class="settings-label">Open PRs as draft</label>
+                <div class="settings-hint">
+                    Least-privilege posture: LLM-authored PRs open as <strong>drafts</strong> for human review. Uncheck to open ready-for-review PRs that can be merged directly.
+                </div>
+                <label style="display: flex; gap: 6px; align-items: center; cursor: pointer; margin-top: 6px;">
+                    <input type="checkbox" name="open_prs_as_draft" value="true"
+                           {% if open_prs_as_draft %}checked{% endif %}>
+                    Open PRs as draft
+                </label>
+            </div>
+
+            <div class="settings-form-group">
+                <label class="settings-label" for="id-max-runs-hour">Cost breaker — max runs / hour</label>
+                <div class="settings-hint">If this many runs are created within an hour, the agent trips to <strong>Manual</strong> mode (new alerts park as <code>queued</code>) and stops spending until you intervene. <strong>0 disables</strong> this ceiling.</div>
+                <input
+                    type="number" id="id-max-runs-hour"
+                    name="max_runs_per_hour"
+                    min="0" max="100000"
+                    value="{{ max_runs_per_hour }}"
+                    class="settings-input"
+                    style="max-width: 120px;">
+            </div>
+
+            <div class="settings-form-group">
+                <label class="settings-label" for="id-max-usd-day">Cost breaker — max USD / day</label>
+                <div class="settings-hint">If estimated synthesis (Opus) spend over the trailing day reaches this dollar amount, the agent trips to <strong>Manual</strong> mode. <strong>0 disables</strong> this ceiling.</div>
+                <input
+                    type="number" id="id-max-usd-day"
+                    name="max_usd_per_day"
+                    min="0" step="0.01"
+                    value="{{ max_usd_per_day }}"
+                    class="settings-input"
+                    style="max-width: 120px;">
+            </div>
+
+            <div class="settings-form-group">
+                <label class="settings-label" for="id-patch-backoff">Re-firing backoff — minutes</label>
+                <div class="settings-hint">After an alert's pipeline finishes <strong>without opening a PR</strong> (below the confidence threshold, or no actionable patch), suppress repeated firings of that same alert for this many minutes — one re-investigation per window — so a flapping unfixable alert doesn't re-run the full Haiku→Sonnet→Opus pipeline every time. <strong>0 disables</strong> the backoff.</div>
+                <input
+                    type="number" id="id-patch-backoff"
+                    name="patch_backoff_minutes"
+                    min="0" max="10080"
+                    value="{{ patch_backoff_minutes }}"
+                    class="settings-input"
+                    style="max-width: 120px;">
+            </div>
+
+            <div class="settings-actions">
+                <button type="submit" class="settings-btn">Save settings</button>
+                <a href="{{ url_for('settings_page') }}" class="settings-btn secondary">Reset</a>
+            </div>
+        </form>
+    </div>
+
+    {# ---- Connections tab ---- #}
+    <div class="settings-tab-panel panel-connections">
+        <div class="connection-row">
+            <div class="connection-info">
+                <div class="conn-name">Slack</div>
+                <div class="conn-detail">
+                    {% if slack_configured %}Webhook endpoint: <code>{{ slack_masked }}</code>{% else %}<em>SLACK_WEBHOOK_URL not configured</em>{% endif %}
+                </div>
+            </div>
+            {% if slack_configured %}
+            <div id="slack-test-result" class="test-result"></div>
+            <form method="post" action="{{ url_for('settings_test_slack') }}">
+                <button type="submit"
+                        class="settings-btn test-btn"
+                        hx-post="{{ url_for('settings_test_slack') }}"
+                        hx-target="#slack-test-result"
+                        hx-swap="innerHTML">
+                    Test
+                </button>
+            </form>
+            {% else %}
+            <span class="test-result test-err">Not configured</span>
+            {% endif %}
+        </div>
+
+        <div class="connection-row">
+            <div class="connection-info">
+                <div class="conn-name">GitHub</div>
+                <div class="conn-detail">
+                    {% if github_configured %}Token: configured · Repo: see services.yaml{% else %}<em>GITHUB_TOKEN not configured</em>{% endif %}
+                </div>
+            </div>
+            {% if github_configured %}
+            <div id="github-test-result" class="test-result"></div>
+            <form method="post" action="{{ url_for('settings_test_github') }}">
+                <button type="submit"
+                        class="settings-btn test-btn"
+                        hx-post="{{ url_for('settings_test_github') }}"
+                        hx-target="#github-test-result"
+                        hx-swap="innerHTML">
+                    Test
+                </button>
+            </form>
+            {% else %}
+            <span class="test-result test-err">Not configured</span>
+            {% endif %}
+        </div>
+
+        <div class="connection-row">
+            <div class="connection-info">
+                <div class="conn-name">Anthropic</div>
+                <div class="conn-detail">Model: <code>{{ anthropic_model }}</code></div>
+            </div>
+            <span class="test-result {% if anthropic_model %}test-ok{% else %}test-err{% endif %}">
+                {% if anthropic_model %}✓ Configured{% else %}Not configured{% endif %}
+            </span>
+        </div>
+    </div>
+
+</div>{# .settings-tabs-wrap #}
+
+{% endblock %}

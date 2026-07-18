@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}llopster{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', path='app.css') }}">
+    <script src="https://unpkg.com/htmx.org@2.0.3" defer></script>
+    <script src="https://unpkg.com/htmx-ext-sse@2.2.2/sse.js" defer></script>
+</head>
+<body>
+<header class="topbar">
+    <h1>llopster</h1>
+    <nav>
+        <a href="{{ url_for('runs_list') }}" {% if active == 'runs' %}class="active"{% endif %}>Runs</a>
+        <a href="{{ url_for('trigger_form') }}" {% if active == 'trigger' %}class="active"{% endif %}>Trigger</a>
+        <a href="{{ url_for('stats_page') }}" {% if active == 'stats' %}class="active"{% endif %}>Stats</a>
+        <a href="{{ url_for('settings_page') }}" {% if active == 'settings' %}class="active"{% endif %}>Settings</a>
+        <a href="{{ url_for('diagnostics_page') }}" {% if active == 'diagnostics' %}class="active"{% endif %}>Diagnostics</a>
+    </nav>
+    <div style="margin-left: auto; display: flex; align-items: center; gap: 12px;">
+        <span id="agent-status-pill"
+              hx-get="/api/agent-status"
+              hx-trigger="load, every 30s"
+              hx-swap="innerHTML">
+        </span>
+        <span class="muted">v0.6.0</span>
+    </div>
+</header>
+<main>
+    {% block content %}{% endblock %}
+</main>
+</body>
+</html>

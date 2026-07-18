@@ -1,0 +1,44 @@
+id: helm-values-misconfigured
+description: >-
+  demo-app's helm-values.yaml carries an invalid memory limit ("512MBz"), which
+  check_helm_values.py flags as a config error. The fix is the unit typo in the
+  values file (or the validation in check_helm_values.py).
+
+alert:
+  version: "4"
+  status: firing
+  receiver: agent-webhook
+  groupLabels:
+    alertname: HelmValuesMisconfigured
+  alerts:
+    - status: firing
+      labels:
+        alertname: HelmValuesMisconfigured
+        severity: warning
+        service: demo-app
+        namespace: default
+        pod: demo-app-7c9b4d-xk2lp
+      annotations:
+        summary: Helm chart values misconfigured for demo-app
+        description: >-
+          demo-app pods are crash-looping due to an invalid memory limit in
+          helm values.yaml
+      startsAt: "2026-04-18T10:00:00.000Z"
+      endsAt: "0001-01-01T00:00:00Z"
+      generatorURL: "http://localhost:9090/graph?g0.expr=demo_app_config_errors_total%20%3E%200&g0.tab=1"
+      fingerprint: helm01values02misconfig03
+
+recorded_context:
+  log_lines:
+    - line: "ERROR config: invalid memory limit '512MBz' in helm-values.yaml — not a valid quantity"
+      labels: {service: demo-app, component: config, level: error}
+    - line: "ERROR config: 1 configuration error detected; refusing to start with invalid resource limits"
+      labels: {service: demo-app, component: config, level: error}
+  metric_samples:
+    - metric: {__name__: demo_app_config_errors_total, service: demo-app}
+      value: 1
+
+ground_truth:
+  expect_patch: true
+  expected_files: [helm-values.yaml, check_helm_values.py]
+  root_cause_keywords: [memory, "512", limit, quantity]

@@ -1,0 +1,171 @@
+{{- if .Values.postgresql.enabled }}
+# ---------------------------------------------------------------------------
+# PostgreSQL — backing store for the agent + dashboard.
+#
+# We ship our own minimal template instead of the bitnami/postgresql subchart
+# because Bitnami deprecated free-tier Docker Hub publishing in 2025 — newer
+# bitnami chart versions reference image tags that fail to pull.  The official
+# `postgres:<ver>-alpine` image is small, well-maintained, and always public.
+#
+# Service name `llopster-postgres` is what the agent and dashboard
+# DATABASE_URL templates depend on — don't rename without updating those.
+# ---------------------------------------------------------------------------
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: llopster-postgres-credentials
+  labels:
+    {{- include "k3s-deployment.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+type: Opaque
+stringData:
+  POSTGRES_DB: {{ .Values.postgresql.auth.database | quote }}
+  POSTGRES_USER: {{ .Values.postgresql.auth.username | quote }}
+  POSTGRES_PASSWORD: {{ .Values.postgresql.auth.password | quote }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: llopster-postgres
+  labels:
+    {{- include "k3s-deployment.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+spec:
+  type: ClusterIP
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+  selector:
+    app: llopster-postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: llopster-postgres
+  labels:
+    {{- include "k3s-deployment.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+spec:
+  serviceName: llopster-postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: llopster-postgres
+  template:
+    metadata:
+      labels:
+        app: llopster-postgres
+        app.kubernetes.io/component: postgres
+      annotations:
+        # Roll the pod when credentials change.
+        checksum/credentials: {{ .Values.postgresql.auth | toYaml | sha256sum }}
+    spec:
+      # NFS-friendly init container: prepares the volume so postgres (uid 70)
+      # can write to it.  fsGroup alone doesn't work on NFS because NFS
+      # permissions are enforced server-side, so we either chown explicitly
+      # (works on most CSI drivers) or chmod 0777 as a fallback (works even
+      # under NFS root_squash).
+      initContainers:
+        - name: init-postgres-data
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              mkdir -p /var/lib/postgresql/data/pgdata
+              if chown -R 70:70 /var/lib/postgresql/data 2>/dev/null; then
+                echo "init: chown 70:70 succeeded"
+                chmod 0700 /var/lib/postgresql/data/pgdata
+              else
+                echo "init: chown failed (NFS root_squash?); using chmod 0777 fallback"
+                chmod -R 0777 /var/lib/postgresql/data
+              fi
+          securityContext:
+            runAsUser: 0      # init container only — needed to chown
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+      containers:
+        - name: postgres
+          image: "{{ .Values.postgresql.image.repository }}:{{ .Values.postgresql.image.tag }}"
+          imagePullPolicy: {{ .Values.postgresql.image.pullPolicy | default "IfNotPresent" }}
+          # Run as the postgres user (70) directly. When the entrypoint sees
+          # it's NOT running as root, it skips the chown step entirely —
+          # the init container above has already prepared the volume.
+          securityContext:
+            runAsUser: 70
+            runAsGroup: 70
+            runAsNonRoot: true
+          ports:
+            - name: postgres
+              containerPort: 5432
+          envFrom:
+            - secretRef:
+                name: llopster-postgres-credentials
+          env:
+            # PGDATA inside a subdirectory so the mount root (which often has
+            # files like lost+found on managed PVs) doesn't confuse initdb.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - {{ .Values.postgresql.auth.username | quote }}
+                - -d
+                - {{ .Values.postgresql.auth.database | quote }}
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+          livenessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - {{ .Values.postgresql.auth.username | quote }}
+                - -d
+                - {{ .Values.postgresql.auth.database | quote }}
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+          # Bitnami-shaped values: resources live under postgresql.primary.
+          # A non-null default is shipped so an operator who omits the block
+          # still gets CPU/memory bounds (no unbounded pod that can OOM the
+          # node holding all state).
+          resources:
+            {{- $res := dig "primary" "resources" dict .Values.postgresql }}
+            {{- if $res }}
+            {{- toYaml $res | nindent 12 }}
+            {{- else }}
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+            {{- end }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        # persistence config also lives under postgresql.primary.persistence
+        # (Bitnami shape). storageClass/size were previously read from flat
+        # keys that no values file sets, so a configured storageClass was
+        # silently dropped and size was pinned at 5Gi regardless.
+        accessModes:
+          {{- toYaml (dig "primary" "persistence" "accessModes" (list "ReadWriteOnce") .Values.postgresql) | nindent 10 }}
+        {{- $sc := dig "primary" "persistence" "storageClass" "" .Values.postgresql }}
+        {{- if $sc }}
+        storageClassName: {{ $sc | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ dig "primary" "persistence" "size" "5Gi" .Values.postgresql | quote }}
+{{- end }}

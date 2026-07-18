@@ -1,0 +1,106 @@
+# =============================================================================
+# Grafana Alloy → Loki — log shipping recipe for LLopster (BYO log path)
+#
+# LLopster does NOT collect logs itself. It reads Loki's query API for the
+# logs around an alert. Whatever fills Loki — Grafana Alloy, Promtail, Vector,
+# Fluent Bit — is fine; LLopster is collector-agnostic. The ONE thing that
+# must line up is labels: LLopster scopes its LogQL to the alerting workload
+# by probing a list of Loki *stream labels* in order (config `LOG_SCOPE_LABELS`,
+# default below) and using the first one that's also present on the alert.
+#
+#   LOG_SCOPE_LABELS default:
+#     service, app, app_kubernetes_io_name, app_kubernetes_io_instance,
+#     container, pod, namespace, job
+#
+# So: make sure the labels Alloy attaches to streams overlap with the labels
+# your Prometheus alerts carry. The relabel block below emits namespace / pod /
+# container / app / app_kubernetes_io_name, which covers the default probe
+# order and the labels kube-state-metrics alerts (and the LLopster starter
+# pack) already carry.
+#
+# Promtail note: Grafana has deprecated Promtail in favour of Alloy. New Loki
+# stacks should use this; existing Promtail installs keep working unchanged
+# (same Loki, same labels) — see prometheus-rules-snippet.yaml siblings.
+#
+# Usage (install the grafana/alloy chart with these values):
+#   helm repo add grafana https://grafana.github.io/helm-charts
+#   helm upgrade --install alloy grafana/alloy -n monitoring -f alloy-logs.yaml
+#
+# Point `loki.write` at YOUR Loki push endpoint, and point LLopster's
+# `loki.url` at the SAME Loki's query endpoint (values.yaml: loki.url).
+# =============================================================================
+
+alloy:
+  configMap:
+    content: |-
+      // Discover every pod in the cluster.
+      discovery.kubernetes "pods" {
+        role = "pod"
+      }
+
+      // Map the __meta_kubernetes_* discovery labels onto the Loki stream
+      // labels LLopster probes. Keep the set small — every label is stream
+      // cardinality cost. The names here must match LLopster's
+      // LOG_SCOPE_LABELS (and the labels your alerts carry).
+      discovery.relabel "pod_logs" {
+        targets = discovery.kubernetes.pods.targets
+
+        rule {
+          source_labels = ["__meta_kubernetes_namespace"]
+          target_label  = "namespace"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_name"]
+          target_label  = "pod"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_container_name"]
+          target_label  = "container"
+        }
+        // Raw `app` label (e.g. app: payments-api on the pod template).
+        rule {
+          source_labels = ["__meta_kubernetes_pod_label_app"]
+          target_label  = "app"
+        }
+        // The k8s-recommended label. Loki stream labels can't contain dots or
+        // slashes, so app.kubernetes.io/name becomes app_kubernetes_io_name —
+        // which is exactly what LLopster probes for.
+        rule {
+          source_labels = ["__meta_kubernetes_pod_label_app_kubernetes_io_name"]
+          target_label  = "app_kubernetes_io_name"
+        }
+      }
+
+      // Tail container logs via the Kubernetes API (needs pods/log RBAC, which
+      // the alloy chart's default ClusterRole grants).
+      loki.source.kubernetes "pod_logs" {
+        targets    = discovery.relabel.pod_logs.output
+        forward_to = [loki.write.default.receiver]
+      }
+
+      // Ship everything to your Loki. CHANGE THIS to your Loki push URL — and
+      // make sure LLopster's loki.url points at the same Loki's query API.
+      loki.write "default" {
+        endpoint {
+          url = "http://loki.monitoring.svc.cluster.local:3100/loki/api/v1/push"
+        }
+      }
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+# DaemonSet (one Alloy per node) is the chart default for log collection.
+controller:
+  type: daemonset
+
+# Default RBAC ClusterRole includes pods + pods/log get/list/watch, which
+# loki.source.kubernetes needs.
+rbac:
+  create: true
+serviceAccount:
+  create: true

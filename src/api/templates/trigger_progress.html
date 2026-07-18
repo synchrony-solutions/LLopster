@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Run in Progress — llopster{% endblock %}
+{% block content %}
+
+<div class="crumbs">
+    <a href="{{ url_for('trigger_form') }}">← Trigger</a>
+</div>
+
+<div class="page-header">
+    <h2>Running pipeline…</h2>
+    <span class="muted">{{ run.alertname }} · {{ run.service or '?' }} · manual</span>
+</div>
+
+{% if not terminal %}
+<div class="error-banner" style="color: var(--accent); background: var(--accent-soft); border-color: var(--accent);">
+    <span class="live-dot"></span>
+    Pipeline is running — this page will redirect automatically when complete.
+</div>
+{% endif %}
+
+{# This div is the HTMX swap target. It polls the partial every 2s.
+   When the run reaches a terminal state, the partial responds with
+   HX-Redirect and HTMX bounces the browser to /runs/{id}. #}
+<div id="trigger-status"
+     {% if not terminal %}
+     hx-get="{{ url_for('trigger_progress_partial', run_id=run.id) }}"
+     hx-trigger="every 2s"
+     hx-swap="outerHTML"
+     {% endif %}>
+    {% include "partials/_trigger_status.html" %}
+</div>
+
+{% endblock %}

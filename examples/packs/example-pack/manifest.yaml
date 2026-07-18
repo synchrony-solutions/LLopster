@@ -1,0 +1,27 @@
+# Example premium pack — schema reference + load-path exerciser.
+#
+# This pack ships in the OPEN repo on purpose. It contains NO premium content:
+# the prompt files below are obvious placeholders, present only so the loader,
+# the schema, and the tests have something real to exercise. Real packs live in
+# a separate PRIVATE repo and are never committed here.
+#
+# To make this pack actually apply at runtime you must BOTH:
+#   1. Mount it under LLOPSTER_PACKS_DIR (default /packs), and
+#   2. Be entitled to it: set LLOPSTER_PACK_TOKEN to include this pack's id,
+#      e.g. LLOPSTER_PACK_TOKEN="example-pack"
+# Without entitlement the loader still registers it, but resolve() falls back
+# to the baked-in Community prompt and logs a warning.
+
+id: example-pack          # required — unique id; the entitlement key
+version: 0.1.0            # required
+stack: example           # optional — the ServiceConfig `pack:` value that selects this pack
+# Integrity stub over id+version (NOT real crypto yet — see packs.py).
+# Regenerate with: compute_stub_signature("example-pack", "0.1.0")
+signature: "sha256:d5c27a39ca048570286911c561b40524175cbe8b95bb1fbb644c7973b479f873"
+
+# stage -> filename under prompts/. Only listed stages are overlaid; omit a
+# stage to leave its Community prompt untouched.
+prompts:
+  synthesis: synthesis.md
+  investigation: investigation.md
+  triage: triage.md

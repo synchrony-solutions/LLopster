@@ -1,0 +1,46 @@
+name: Tests
+
+# Runs the Python unit/integration suite on every PR. Tests use
+# sqlite+aiosqlite in-memory and mocked HTTP/Anthropic clients (no live API
+# calls, no external services), so the job needs nothing but pip.
+
+on:
+  pull_request:
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "alembic/**"
+      - "requirements.txt"
+      - "pyproject.toml"
+      - "scripts/sync_test_count.py"
+      - "README.md"
+      - ".github/workflows/tests.yml"
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run tests
+        run: python -m pytest tests/ -q
+
+      # Single source of truth for the test-count figures quoted in the docs:
+      # the number is derived from what pytest collects, so README/CLAUDE/ROADMAP
+      # can't drift. Fails the build if a doc is stale — run
+      # `python scripts/sync_test_count.py` locally and commit the result.
+      - name: Check docs test count is in sync
+        run: python scripts/sync_test_count.py --check

@@ -1,0 +1,45 @@
+id: upstream-timeout-spike
+description: >-
+  demo-app's upstream call timeout is set to 0.001 (seconds vs milliseconds), so
+  every downstream request times out instantly. The fix is the unit bug in
+  check_upstream.py.
+
+alert:
+  version: "4"
+  status: firing
+  receiver: agent-webhook
+  groupLabels:
+    alertname: UpstreamTimeoutSpike
+  alerts:
+    - status: firing
+      labels:
+        alertname: UpstreamTimeoutSpike
+        severity: warning
+        service: demo-app
+        namespace: default
+        pod: demo-app-7c9b4d-xk2lp
+        component: upstream
+      annotations:
+        summary: demo-app downstream calls timing out
+        description: >-
+          demo-app saw a spike of upstream timeouts in the last 2 minutes.
+          Investigate timeout/retry configuration or upstream availability.
+      startsAt: "2026-04-18T10:00:00.000Z"
+      endsAt: "0001-01-01T00:00:00Z"
+      generatorURL: "http://localhost:9090/graph?g0.expr=increase%28demo_app_upstream_timeout_total%5B2m%5D%29%20%3E%2010&g0.tab=1"
+      fingerprint: upstream01timeout02spike03
+
+recorded_context:
+  log_lines:
+    - line: "ERROR upstream: request to inventory-service timed out after 0.001s — timeout far below round-trip time"
+      labels: {service: demo-app, component: upstream, level: error}
+    - line: "ERROR upstream: 18 timeouts in last 2m; effective timeout appears to be ~1ms"
+      labels: {service: demo-app, component: upstream, level: error}
+  metric_samples:
+    - metric: {__name__: demo_app_upstream_timeout_total, service: demo-app}
+      value: 18
+
+ground_truth:
+  expect_patch: true
+  expected_files: [check_upstream.py]
+  root_cause_keywords: [timeout, TIMEOUT_SECONDS, 0.001, millisecond]

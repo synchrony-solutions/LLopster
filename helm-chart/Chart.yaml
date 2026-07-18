@@ -1,0 +1,30 @@
+apiVersion: v2
+name: LLopster
+description: |
+  LLopster agent + dashboard, with optional bundled observability stack
+  (Prometheus, AlertManager, Loki) for evaluation. In production, set
+  prometheus.bundled=false and loki.bundled=false and point LLopster at
+  your existing observability via prometheus.url / loki.url.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+
+dependencies:
+  # Bundled observability. Toggled by prometheus.bundled / loki.bundled in
+  # values.yaml. AlertManager rides with bundled Prometheus (no separate
+  # toggle); in BYO mode the customer's existing AlertManager forwards to
+  # LLopster's webhook via the integration-recipes snippet.
+  - name: prometheus
+    version: "29.5.0"
+    repository: https://prometheus-community.github.io/helm-charts
+    condition: prometheus.bundled
+  - name: alertmanager
+    version: "1.35.1"
+    repository: https://prometheus-community.github.io/helm-charts
+    condition: prometheus.bundled
+  - name: loki
+    version: "6.55.0"
+    repository: https://grafana.github.io/helm-charts
+    condition: loki.bundled
+  # PostgreSQL is deployed via templates/postgres.yaml (official
+  # postgres:17-alpine image).

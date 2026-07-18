@@ -1,0 +1,15 @@
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: agent-webhook
+  group_by: ['alertname', 'service']
+  group_wait: 10s
+  group_interval: 30s
+  repeat_interval: 5m
+
+receivers:
+  - name: agent-webhook
+    webhook_configs:
+      - url: http://agent:8000/webhook
+        send_resolved: true

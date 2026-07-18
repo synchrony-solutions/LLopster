@@ -1,0 +1,36 @@
+{{- if and .Values.agent.enabled .Values.agent.networkPolicy.enabled }}
+---
+# Restricts who can reach the agent's webhook/API port (8000) to in-cluster
+# sources. Opt-in (agent.networkPolicy.enabled): it only enforces on a CNI that
+# supports NetworkPolicy, and an over-tight policy would drop AlertManager
+# deliveries — so the agent's own namespace is always allowed (the dashboard
+# server-side proxy + a same-namespace AlertManager), and operators add the
+# namespace(s) their AlertManager / ingress controller run in. With no `ipBlock`
+# rule, traffic that does not originate from an in-cluster pod is denied.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: llopster-agent
+  labels:
+    {{- include "k3s-deployment.labels" . | nindent 4 }}
+    app.kubernetes.io/component: agent
+spec:
+  podSelector:
+    matchLabels:
+      app: llopster-agent
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        # Same-namespace sources: the dashboard proxy and an in-namespace
+        # (e.g. bundled-eval) AlertManager.
+        - podSelector: {}
+        {{- range .Values.agent.networkPolicy.allowedNamespaces }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ . | quote }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: 8000
+{{- end }}

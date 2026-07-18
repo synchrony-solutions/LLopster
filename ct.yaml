@@ -1,0 +1,16 @@
+# chart-testing (ct) configuration — consumed by .github/workflows/helm-ci.yml.
+# Docs: https://github.com/helm/chart-testing
+target-branch: main
+chart-dirs:
+  - .
+# The chart lives at ./helm-chart (single chart, not a charts/ monorepo).
+# Bundled observability deps are pulled from these repos during `ct lint`.
+chart-repos:
+  - prometheus-community=https://prometheus-community.github.io/helm-charts
+  - grafana=https://grafana.github.io/helm-charts
+# We don't (yet) declare maintainers in Chart.yaml, and the chart version is
+# tied to appVersion rather than bumped per-PR, so disable those two gates.
+# Re-enable validate-maintainers once a maintainers: block is added.
+validate-maintainers: false
+check-version-increment: false
+helm-extra-args: --timeout 600s

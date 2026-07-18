@@ -1,0 +1,47 @@
+id: cache-hit-rate-low
+description: >-
+  demo-app's cache TTL math divides by 1000 (seconds vs milliseconds), so every
+  entry expires almost immediately and the hit rate collapses to ~0. The fix is
+  the unit bug in check_cache.py.
+
+alert:
+  version: "4"
+  status: firing
+  receiver: agent-webhook
+  groupLabels:
+    alertname: CacheHitRateLow
+  alerts:
+    - status: firing
+      labels:
+        alertname: CacheHitRateLow
+        severity: warning
+        service: demo-app
+        namespace: default
+        pod: demo-app-7c9b4d-xk2lp
+        component: cache
+      annotations:
+        summary: demo-app cache hit rate below 50%
+        description: >-
+          demo-app cache hit rate has dropped near 0% over the last 5 minutes.
+          Likely a TTL, key churn, or eviction misconfiguration.
+      startsAt: "2026-04-18T10:00:00.000Z"
+      endsAt: "0001-01-01T00:00:00Z"
+      generatorURL: "http://localhost:9090/graph?g0.expr=%28rate%28demo_app_cache_hits_total%5B5m%5D%29%20%2F%20%28rate%28demo_app_cache_hits_total%5B5m%5D%29%20%2B%20rate%28demo_app_cache_misses_total%5B5m%5D%29%29%29%20%3C%200.5&g0.tab=1"
+      fingerprint: cache01hitrate02low03
+
+recorded_context:
+  log_lines:
+    - line: "WARN cache: miss for key user:42 (entry expired after ~0s) — TTL appears far shorter than configured"
+      labels: {service: demo-app, component: cache, level: warning}
+    - line: "WARN cache: hit rate 0.7% over last 5m (hits=3 misses=421)"
+      labels: {service: demo-app, component: cache, level: warning}
+  metric_samples:
+    - metric: {__name__: demo_app_cache_hits_total, service: demo-app}
+      value: 3
+    - metric: {__name__: demo_app_cache_misses_total, service: demo-app}
+      value: 421
+
+ground_truth:
+  expect_patch: true
+  expected_files: [check_cache.py]
+  root_cause_keywords: [TTL, expire, 1000, millisecond]

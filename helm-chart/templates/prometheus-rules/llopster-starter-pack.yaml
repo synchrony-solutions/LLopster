@@ -1,0 +1,83 @@
+{{- if .Values.alertRules.enabled }}
+---
+# LLopster starter pack — small set of cross-cutting infra alerts annotated
+# with llopster_* hints the agent prompt consumes for better patches.
+#
+# Opt-in: production teams almost always have their own alerting regime,
+# this is layered on top via `alertRules.enabled=true`.
+#
+# Requires the Prometheus Operator (kube-prometheus-stack). For raw
+# Prometheus, see helm-chart/docs/integration-recipes/prometheus-rules-snippet.yaml.
+#
+# Service-label contract: src/agent/alert_filter.py skips any alert whose
+# `service` label isn't a key in services.yaml, and src/agent/alert_handler.py
+# defaults a missing `service` label to "unknown" (always skipped). These are
+# cluster-wide rules with no single owning service, so KubePodCrashLooping and
+# KubeDeploymentReplicasMismatch template `service` from the firing pod's
+# `namespace` — this only produces a PR when that namespace happens to match a
+# services.yaml key (e.g. the demo-app / order-service testbed convention of
+# namespace == service name); alerts from unmapped namespaces are correctly
+# skipped rather than silently misrouted. PrometheusTargetDown has no
+# reasonable per-namespace owner and is a scrape failure no code patch can
+# fix, so it stays in alert_filter.py's DEFAULT_IGNORE_ALERTNAMES instead —
+# visibility-only by design, not a bug.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: llopster-starter-pack
+  labels:
+    {{- include "k3s-deployment.labels" . | nindent 4 }}
+    app.kubernetes.io/component: alert-rules
+    llopster_managed: "true"
+    {{- with .Values.alertRules.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: llopster-starter-pack
+      interval: {{ .Values.alertRules.interval }}
+      rules:
+        - alert: PrometheusTargetDown
+          expr: up == 0
+          for: 2m
+          labels:
+            severity: critical
+            llopster_managed: "true"
+          annotations:
+            summary: "Prometheus target {{`{{ $labels.job }}`}} is down"
+            description: "Target {{`{{ $labels.instance }}`}} for job {{`{{ $labels.job }}`}} has been unreachable for 2 minutes."
+            llopster_runbook: "Scrape target failure. Check the pod's network policy, readiness probes, or whether the Service/Endpoints actually resolve to a Pod. Manifest-level issues usually live in the service's Helm values or Deployment template."
+
+        - alert: KubePodCrashLooping
+          expr: |
+            rate(kube_pod_container_status_restarts_total{job="kube-state-metrics"}[15m]) * 60 * 5 > 0
+          for: 15m
+          labels:
+            severity: warning
+            llopster_managed: "true"
+            service: '{{`{{ $labels.namespace }}`}}'
+          annotations:
+            summary: "Pod {{`{{ $labels.namespace }}/{{ $labels.pod }}`}} is crash-looping"
+            description: "Pod {{`{{ $labels.namespace }}/{{ $labels.pod }}`}} restarted {{`{{ printf \"%.2f\" $value }}`}} times in the last 15 minutes."
+            llopster_runbook: "Likely image pull failure, OOMKilled, or app startup error. Check container logs for the underlying error and the pod's resource limits — a tight memory limit is the most common cause of an OOM crash loop."
+
+        - alert: KubeDeploymentReplicasMismatch
+          expr: |
+            (
+              kube_deployment_spec_replicas{job="kube-state-metrics"}
+                !=
+              kube_deployment_status_replicas_available{job="kube-state-metrics"}
+            ) and (
+              changes(kube_deployment_status_replicas_updated{job="kube-state-metrics"}[10m])
+                == 0
+            )
+          for: 15m
+          labels:
+            severity: warning
+            llopster_managed: "true"
+            service: '{{`{{ $labels.namespace }}`}}'
+          annotations:
+            summary: "Deployment {{`{{ $labels.namespace }}/{{ $labels.deployment }}`}} has unavailable replicas"
+            description: "Deployment {{`{{ $labels.namespace }}/{{ $labels.deployment }}`}} has been short on available replicas for 15 minutes without progress."
+            llopster_runbook: "Replicas not converging. Check pod-level errors (CrashLoopBackOff, ImagePullBackOff, FailedScheduling), node capacity, and any recent changes to the Deployment spec or the underlying ReplicaSet."
+{{- end }}

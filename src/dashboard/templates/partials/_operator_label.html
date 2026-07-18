@@ -1,0 +1,39 @@
+{# Operator ground-truth label widget. Rendered inside run_detail.html AND
+   returned by POST /runs/{id}/label so HTMX can swap it in place without a
+   full reload. The outer #operator-label id is the hx-swap target. #}
+<div id="operator-label" class="operator-label">
+    {% if run.operator_label %}
+    <div class="operator-label-current">
+        <span class="muted" style="font-size: 13px;">Current verdict:</span>
+        <span class="{{ operator_label_class(run.operator_label) }}">{{ operator_label_text(run.operator_label) }}</span>
+        {% if run.operator_labeled_at %}
+        <span class="muted" style="font-size: 12px;">· {{ run.operator_labeled_at | dt }}{% if run.operator_labeled_by %} by {{ run.operator_labeled_by }}{% endif %}</span>
+        {% endif %}
+        {% if run.operator_label_note %}
+        <div class="operator-label-note">{{ run.operator_label_note }}</div>
+        {% endif %}
+    </div>
+    {% else %}
+    <p class="muted" style="margin: 0 0 10px 0; font-size: 13px;">Not yet labeled — your verdict trains the eval harness.</p>
+    {% endif %}
+
+    <form class="operator-label-form"
+          hx-post="{{ url_for('run_label', run_id=run.id) }}"
+          hx-target="#operator-label"
+          hx-swap="outerHTML">
+        <div class="operator-label-buttons">
+            {% for value, text in operator_label_choices() %}
+            <button type="submit" name="label" value="{{ value }}"
+                    class="settings-btn label-btn {% if run.operator_label == value %}label-btn-active{% endif %}">
+                {{ text }}
+            </button>
+            {% endfor %}
+            {% if run.operator_label %}
+            <button type="submit" name="label" value="" class="settings-btn secondary">Clear</button>
+            {% endif %}
+        </div>
+        <input type="text" name="note" class="operator-label-input"
+               placeholder="Optional note — why was it right / wrong?"
+               value="{{ run.operator_label_note or '' }}">
+    </form>
+</div>

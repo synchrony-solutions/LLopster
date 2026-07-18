@@ -1,0 +1,131 @@
+services:
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: llopster-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./config/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./config/prometheus/rules:/etc/prometheus/rules:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    restart: unless-stopped
+
+  loki:
+    image: grafana/loki:3.1.1
+    container_name: llopster-loki
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./config/loki/loki-config.yaml:/etc/loki/loki-config.yaml:ro
+      - loki-data:/loki
+    command: -config.file=/etc/loki/loki-config.yaml
+    restart: unless-stopped
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: llopster-alertmanager
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./config/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager-data:/alertmanager
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'
+    depends_on:
+      - agent
+    restart: unless-stopped
+
+  agent:
+    build: .
+    container_name: llopster-agent
+    ports:
+      - "8000:8000"
+    environment:
+      # Pulled from project-root .env (compose auto-loads it for variable
+      # substitution). Defaults to empty so missing vars disable a feature
+      # rather than crashing the container.
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - ANTHROPIC_MODEL=${ANTHROPIC_MODEL:-claude-opus-4-7}
+      - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL:-}
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      - PATCH_CONFIDENCE_THRESHOLD=${PATCH_CONFIDENCE_THRESHOLD:-4}
+      - LOG_LOOKBACK_MINUTES=${LOG_LOOKBACK_MINUTES:-30}
+      - MAX_LOG_LINES=${MAX_LOG_LINES:-200}
+      # Use docker DNS instead of localhost so the agent reaches the other
+      # containers via the compose network.
+      - LOKI_URL=http://loki:3100
+      - PROMETHEUS_URL=http://prometheus:9090
+      # Run history database — sqlite file on the agent-data named volume
+      # so it survives container restarts.
+      - DATABASE_URL=sqlite+aiosqlite:////app/data/llopster.db
+    volumes:
+      # Service registry + per-service codebase paths are mounted live so
+      # adding a service or editing source doesn't require an image rebuild.
+      - ./config/services.yaml:/app/config/services.yaml:ro
+      - ../demo-app:/app/demo-app:ro
+      # Persistent run history database.
+      - agent-data:/app/data
+    depends_on:
+      - loki
+      - prometheus
+    restart: unless-stopped
+
+  dashboard:
+    build: .
+    container_name: llopster-dashboard
+    ports:
+      - "3001:8000"
+    environment:
+      - SERVICE=dashboard
+      - DATABASE_URL=sqlite+aiosqlite:////app/data/llopster.db
+      # AGENT_URL lets the nav bar show a "Trigger ↗" link pointing at the
+      # agent's external port.  Adjust if you change the agent port.
+      - AGENT_URL=${AGENT_URL:-http://localhost:8000}
+    volumes:
+      # Shared read access to the same SQLite database the agent writes to.
+      - agent-data:/app/data
+    depends_on:
+      - agent
+    restart: unless-stopped
+
+# Assumes that demo app exists at ../demo-app relative to the compose file.  Adjust the build context if it's located elsewhere.
+  demo-app:
+    build: ../demo-app
+    container_name: llopster-demo-app
+    ports:
+      - "8001:8001"
+    environment:
+      - LOKI_URL=http://loki:3100
+    depends_on:
+      - loki
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.2.2
+    container_name: llopster-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+    volumes:
+      - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+      - loki
+    restart: unless-stopped
+
+volumes:
+  prometheus-data:
+  loki-data:
+  alertmanager-data:
+  grafana-data:
+  agent-data:

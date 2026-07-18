@@ -1,0 +1,61 @@
+LLopster installed.
+
+In-cluster service DNS:
+{{- if .Values.agent.enabled }}
+  - llopster-agent     → http://llopster-agent.{{ .Release.Namespace }}.svc.cluster.local:8000
+{{- end }}
+{{- if .Values.dashboard.enabled }}
+  - llopster-dashboard → http://llopster-dashboard.{{ .Release.Namespace }}.svc.cluster.local:8000
+{{- end }}
+{{- if .Values.prometheus.bundled }}
+  - prometheus  (bundled) → http://prometheus-server.{{ .Release.Namespace }}.svc.cluster.local:80
+  - alertmanager (bundled) → http://alertmanager.{{ .Release.Namespace }}.svc.cluster.local:9093
+{{- else }}
+  - prometheus  (BYO) → {{ .Values.prometheus.url | default "(prometheus.url not set!)" }}
+{{- end }}
+{{- if .Values.loki.bundled }}
+  - loki (bundled) → http://loki.{{ .Release.Namespace }}.svc.cluster.local:3100
+{{- else }}
+  - loki (BYO) → {{ .Values.loki.url | default "(loki.url not set!)" }}
+{{- end }}
+
+{{- range $name, $cfg := .Values.ingress.services }}
+{{- if $cfg.enabled }}
+{{- if eq $name (index $.Values.ingress.services $name).service }}{{ end }}
+  • Ingress {{ $name }}: http://{{ $cfg.host }}
+{{- end }}
+{{- end }}
+
+{{- if not .Values.prometheus.bundled }}
+
+⚠ BYO Prometheus — you must wire your existing AlertManager to forward
+  alerts to LLopster's webhook. See:
+    helm-chart/docs/integration-recipes/alertmanager-receiver.yaml
+{{- end }}
+
+{{- if .Values.alertRules.enabled }}
+
+✓ LLopster starter-pack PrometheusRule installed. Requires the Prometheus
+  Operator (kube-prometheus-stack); if your operator's ruleSelector needs
+  a specific label, set alertRules.labels in values.yaml.
+{{- end }}
+
+Things to wire up before the stack is fully functional
+(search values.yaml for "CHANGEME"):
+
+{{- if .Values.imagePullSecret.enabled }}
+  1. imagePullSecret.{username,password,email}
+       — for pulling from a private registry.
+{{- end }}
+{{- if .Values.agent.enabled }}
+  2. agent.secrets.* — Anthropic key, Slack webhook, GitHub token + repo.
+  3. agent.servicesConfig — map each `service` alert label to a codebase
+     path + github repo for PR creation.
+  4. agent.codebases[] — repo URLs for the init container to clone before
+     the agent starts.
+{{- end }}
+
+For each app you want LLopster to act on:
+  - Install that app's own helm chart (it should ship its own PrometheusRule
+    with llopster.io/* annotations — see demo-app's chart for reference).
+  - Add the matching entry to agent.servicesConfig + agent.codebases here.

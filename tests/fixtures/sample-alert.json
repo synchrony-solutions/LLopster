@@ -1,0 +1,39 @@
+{
+  "version": "4",
+  "groupKey": "{}:{alertname=\"HelmValuesMisconfigured\"}",
+  "status": "firing",
+  "receiver": "agent-webhook",
+  "groupLabels": {
+    "alertname": "HelmValuesMisconfigured"
+  },
+  "commonLabels": {
+    "alertname": "HelmValuesMisconfigured",
+    "severity": "warning",
+    "service": "demo-app"
+  },
+  "commonAnnotations": {
+    "summary": "Helm chart values misconfigured for demo-app",
+    "description": "demo-app pods are crash-looping due to an invalid memory limit in helm values.yaml"
+  },
+  "externalURL": "http://localhost:9093",
+  "alerts": [
+    {
+      "status": "firing",
+      "labels": {
+        "alertname": "HelmValuesMisconfigured",
+        "severity": "warning",
+        "service": "demo-app",
+        "namespace": "default",
+        "pod": "demo-app-7c9b4d-xk2lp"
+      },
+      "annotations": {
+        "summary": "Helm chart values misconfigured for demo-app",
+        "description": "demo-app pods are crash-looping due to an invalid memory limit in helm values.yaml"
+      },
+      "startsAt": "2026-04-18T10:00:00.000Z",
+      "endsAt": "0001-01-01T00:00:00Z",
+      "generatorURL": "http://localhost:9090/graph?g0.expr=vector%281%29&g0.tab=1",
+      "fingerprint": "abc123def456"
+    }
+  ]
+}

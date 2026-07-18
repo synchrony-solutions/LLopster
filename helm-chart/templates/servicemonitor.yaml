@@ -1,0 +1,26 @@
+{{- if and .Values.agent.enabled .Values.agent.serviceMonitor.enabled }}
+# Prometheus Operator ServiceMonitor for the agent's /metrics endpoint.
+# Opt-in (agent.serviceMonitor.enabled) because it depends on the Operator CRDs
+# (monitoring.coreos.com/v1) being installed — a cluster without them would
+# fail to render this object.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: llopster-agent
+  labels:
+    {{- include "k3s-deployment.labels" . | nindent 4 }}
+    app.kubernetes.io/component: agent
+    {{- with .Values.agent.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: agent
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: {{ .Values.agent.serviceMonitor.interval | default "30s" }}
+      scrapeTimeout: {{ .Values.agent.serviceMonitor.scrapeTimeout | default "10s" }}
+{{- end }}

@@ -1,0 +1,94 @@
+name: Helm chart CI
+
+# Lint the chart and smoke-install it on an ephemeral kind cluster on every PR
+# that touches the chart (and on pushes to main). This is the Phase-2 launch
+# subset: lint + render + admission-validated install. Full readiness/e2e
+# (waiting for agent + dashboard pods to become Ready) depends on the published
+# container images and lands with the image build pipeline.
+
+on:
+  pull_request:
+    paths:
+      - "helm-chart/**"
+      - "ct.yaml"
+      - ".github/workflows/helm-ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "helm-chart/**"
+      - "ct.yaml"
+      - ".github/workflows/helm-ci.yml"
+  workflow_dispatch:
+
+jobs:
+  lint:
+    name: ct lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # ct needs full history to diff against the target branch.
+          fetch-depth: 0
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.3
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: helm/chart-testing-action@v2
+
+      - name: helm dependency build
+        run: |
+          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+          helm repo add grafana https://grafana.github.io/helm-charts
+          helm repo update
+          helm dependency build ./helm-chart
+
+      - name: ct lint
+        run: ct lint --config ct.yaml --all
+
+  install:
+    name: kind install smoke
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.3
+
+      - name: Create kind cluster
+        uses: helm/kind-action@v1
+
+      - name: helm dependency build
+        run: |
+          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+          helm repo add grafana https://grafana.github.io/helm-charts
+          helm repo update
+          helm dependency build ./helm-chart
+
+      # Install with bundled observability OFF (BYO placeholder URLs) so the
+      # smoke test stays fast and doesn't pull the whole Prometheus/Loki stack.
+      # No --wait: the LLopster agent/dashboard images are not yet published, so
+      # their pods can't become Ready in CI. This step validates that every
+      # rendered manifest is accepted by a real API server (schema + admission)
+      # — a strict superset of `helm template`. Swap to `--wait` once the image
+      # pipeline publishes pullable images.
+      - name: helm install (admission smoke)
+        run: |
+          helm install llopster ./helm-chart \
+            --namespace llopster --create-namespace \
+            --set prometheus.bundled=false \
+            --set prometheus.url=http://prometheus.example:9090 \
+            --set loki.bundled=false \
+            --set loki.url=http://loki.example:3100
+
+      - name: Show installed resources
+        if: always()
+        run: |
+          kubectl get all -n llopster || true
+          kubectl get pods -n llopster -o wide || true

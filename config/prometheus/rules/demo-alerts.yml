@@ -1,0 +1,77 @@
+groups:
+  - name: demo
+    interval: 30s
+    rules:
+      - alert: AlwaysFiringDemoAlert
+        expr: vector(1)
+        for: 1m
+        labels:
+          severity: warning
+          service: demo
+        annotations:
+          summary: "Demo alert that always fires"
+          description: "This alert is intentionally always firing so you can verify the agent webhook receives payloads end-to-end."
+
+      - alert: HelmValuesMisconfigured
+        expr: increase(demo_app_config_errors_total[1m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+          service: demo-app
+        annotations:
+          summary: "demo-app helm values failing validation"
+          description: "demo-app has logged {{ $value }} config validation errors in the last minute. Check the application logs for the underlying parse failure."
+
+      - alert: DatabasePoolExhausted
+        expr: increase(demo_app_db_pool_exhausted_total[2m]) > 5
+        for: 2m
+        labels:
+          severity: critical
+          service: demo-app
+        annotations:
+          summary: "demo-app database connection pool exhausted"
+          description: "demo-app rejected {{ $value }} queries in the last 2 minutes because no DB connection was available. Pool sizing or connection lifecycle is wrong for the current load."
+
+      - alert: CacheHitRateLow
+        expr: |
+          (
+            rate(demo_app_cache_hits_total[5m])
+            /
+            (rate(demo_app_cache_hits_total[5m]) + rate(demo_app_cache_misses_total[5m]))
+          ) < 0.5
+        for: 2m
+        labels:
+          severity: warning
+          service: demo-app
+        annotations:
+          summary: "demo-app cache hit rate below 50%"
+          description: "demo-app cache hit rate has dropped to {{ $value | humanizePercentage }} over the last 5 minutes. Likely a TTL, key churn, or eviction misconfiguration."
+
+      - alert: UpstreamTimeoutSpike
+        expr: increase(demo_app_upstream_timeout_total[2m]) > 10
+        for: 1m
+        labels:
+          severity: warning
+          service: demo-app
+        annotations:
+          summary: "demo-app downstream calls timing out"
+          description: "demo-app saw {{ $value }} upstream timeouts in the last 2 minutes. Investigate timeout/retry configuration or upstream availability."
+
+      - alert: HeartbeatStale
+        expr: demo_app_heartbeat_age_seconds > 300
+        for: 2m
+        labels:
+          severity: warning
+          service: demo-app
+        annotations:
+          summary: "demo-app scheduler heartbeat stale"
+          description: "demo-app heartbeat is {{ $value }}s old (threshold 300s). The background scheduler is not firing on its expected interval."
+
+      - alert: PrometheusTargetDown
+        expr: up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Prometheus target {{ $labels.job }} is down"
+          description: "Target {{ $labels.instance }} for job {{ $labels.job }} has been unreachable for 2 minutes."

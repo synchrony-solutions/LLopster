@@ -1,0 +1,40 @@
+{
+  "version": "4",
+  "groupKey": "{}:{alertname=\"HeartbeatStale\"}",
+  "status": "firing",
+  "receiver": "agent-webhook",
+  "groupLabels": {
+    "alertname": "HeartbeatStale"
+  },
+  "commonLabels": {
+    "alertname": "HeartbeatStale",
+    "severity": "warning",
+    "service": "demo-app"
+  },
+  "commonAnnotations": {
+    "summary": "demo-app scheduler heartbeat stale",
+    "description": "The background scheduler heartbeat hasn't fired within the expected interval."
+  },
+  "externalURL": "http://localhost:9093",
+  "alerts": [
+    {
+      "status": "firing",
+      "labels": {
+        "alertname": "HeartbeatStale",
+        "severity": "warning",
+        "service": "demo-app",
+        "namespace": "default",
+        "pod": "demo-app-7c9b4d-xk2lp",
+        "component": "scheduler"
+      },
+      "annotations": {
+        "summary": "demo-app scheduler heartbeat stale",
+        "description": "demo-app heartbeat age has exceeded 300s. The background scheduler is not firing on its expected interval."
+      },
+      "startsAt": "2026-04-18T10:00:00.000Z",
+      "endsAt": "0001-01-01T00:00:00Z",
+      "generatorURL": "http://localhost:9090/graph?g0.expr=demo_app_heartbeat_age_seconds%20%3E%20300&g0.tab=1",
+      "fingerprint": "heart01beat02stale03"
+    }
+  ]
+}

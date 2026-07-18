@@ -1,0 +1,61 @@
+# LLopster starter-pack alerts in raw Prometheus YAML form.
+#
+# For clusters running plain prometheus-community/prometheus (no operator),
+# paste these into your `rule_files:` target or your chart's
+# `serverFiles.alerting_rules.yml`.
+#
+# For kube-prometheus-stack / Prometheus Operator installs, prefer setting
+# `alertRules.enabled=true` in LLopster's values.yaml — that ships the
+# same content as a PrometheusRule CRD.
+#
+# Each rule carries:
+#   - llopster_managed="true" label so the AlertManager receiver snippet
+#     matches it.
+#   - llopster_runbook annotation the agent prompt surfaces for better
+#     patch quality.
+
+groups:
+  - name: llopster-starter-pack
+    interval: 30s
+    rules:
+      - alert: PrometheusTargetDown
+        expr: up == 0
+        for: 2m
+        labels:
+          severity: critical
+          llopster_managed: "true"
+        annotations:
+          summary: "Prometheus target {{ $labels.job }} is down"
+          description: "Target {{ $labels.instance }} for job {{ $labels.job }} has been unreachable for 2 minutes."
+          llopster_runbook: "Scrape target failure. Check the pod's network policy, readiness probes, or whether the Service/Endpoints actually resolve to a Pod. Manifest-level issues usually live in the service's Helm values or Deployment template."
+
+      - alert: KubePodCrashLooping
+        expr: |
+          rate(kube_pod_container_status_restarts_total[15m]) * 60 * 5 > 0
+        for: 15m
+        labels:
+          severity: warning
+          llopster_managed: "true"
+        annotations:
+          summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} is crash-looping"
+          description: "Pod {{ $labels.namespace }}/{{ $labels.pod }} restarted {{ printf \"%.2f\" $value }} times in the last 15 minutes."
+          llopster_runbook: "Likely image pull failure, OOMKilled, or app startup error. Check container logs for the underlying error and the pod's resource limits — a tight memory limit is the most common cause of an OOM crash loop."
+
+      - alert: KubeDeploymentReplicasMismatch
+        expr: |
+          (
+            kube_deployment_spec_replicas
+              !=
+            kube_deployment_status_replicas_available
+          ) and (
+            changes(kube_deployment_status_replicas_updated[10m])
+              == 0
+          )
+        for: 15m
+        labels:
+          severity: warning
+          llopster_managed: "true"
+        annotations:
+          summary: "Deployment {{ $labels.namespace }}/{{ $labels.deployment }} has unavailable replicas"
+          description: "Deployment {{ $labels.namespace }}/{{ $labels.deployment }} has been short on available replicas for 15 minutes without progress."
+          llopster_runbook: "Replicas not converging. Check pod-level errors (CrashLoopBackOff, ImagePullBackOff, FailedScheduling), node capacity, and any recent changes to the Deployment spec or the underlying ReplicaSet."

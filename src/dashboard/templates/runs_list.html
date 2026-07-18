@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}Runs — llopster{% endblock %}
+{% block content %}
+
+<div class="page-header">
+    <h2>Runs</h2>
+    <span class="muted">{{ total }} total</span>
+</div>
+
+<form class="filters" method="get" action="{{ url_for('runs_list') }}">
+    <label>Service
+        <input name="service" value="{{ filters.service or '' }}" placeholder="any service">
+    </label>
+    <label>Alertname
+        <input name="alertname" value="{{ filters.alertname or '' }}" placeholder="any alert">
+    </label>
+    <label>Status
+        <select name="status">
+            <option value="">any status</option>
+            {% for s in ["pending", "collecting", "generating", "posting", "queued", "done", "skipped", "failed"] %}
+            <option value="{{ s }}" {% if filters.status == s %}selected{% endif %}>{{ s }}</option>
+            {% endfor %}
+        </select>
+    </label>
+    <label>Label
+        <select name="operator_label">
+            <option value="">any label</option>
+            {% for opt in ["labeled", "unlabeled", "correct", "wrong", "partial", "na"] %}
+            <option value="{{ opt }}" {% if filters.operator_label == opt %}selected{% endif %}>{{ opt }}</option>
+            {% endfor %}
+        </select>
+    </label>
+    <label>Search
+        <input name="q" value="{{ filters.q or '' }}" placeholder="alertname, service, or response text">
+    </label>
+    <label>Page size
+        <select name="limit">
+            {% for n in [10, 25, 50, 100] %}
+            <option value="{{ n }}" {% if limit == n %}selected{% endif %}>{{ n }}</option>
+            {% endfor %}
+        </select>
+    </label>
+    <button type="submit">Apply</button>
+    <a href="{{ url_for('runs_list') }}" class="muted" style="padding: 7px 8px;">Reset</a>
+</form>
+
+{% include "partials/_runs_table.html" %}
+
+<div class="muted" style="margin-top: 16px; font-size: 12px; text-align: right;">
+    {% if retention_days and retention_days > 0 %}
+        Retention: runs older than {{ retention_days }} days are pruned automatically
+        {% if last_pruned %}— last sweep {{ last_pruned | dt }}{% endif %}
+    {% else %}
+        Retention disabled (RUN_RETENTION_DAYS=0) — runs are kept indefinitely
+    {% endif %}
+</div>
+
+{% endblock %}

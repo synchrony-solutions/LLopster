@@ -1,0 +1,48 @@
+id: db-pool-exhausted
+description: >-
+  demo-app's DB connection pool is sized for a smoke test (MAX_CONNECTIONS=2)
+  but serves 5 concurrent queries, so most queries are rejected. The fix lives
+  in check_db_pool.py.
+
+alert:
+  version: "4"
+  status: firing
+  receiver: agent-webhook
+  groupLabels:
+    alertname: DatabasePoolExhausted
+  alerts:
+    - status: firing
+      labels:
+        alertname: DatabasePoolExhausted
+        severity: critical
+        service: demo-app
+        namespace: default
+        pod: demo-app-7c9b4d-xk2lp
+        component: db_pool
+      annotations:
+        summary: demo-app database connection pool exhausted
+        description: >-
+          demo-app rejected several queries in the last 2 minutes because no DB
+          connection was available. Pool sizing or connection lifecycle is wrong
+          for the current load.
+      startsAt: "2026-04-18T10:00:00.000Z"
+      endsAt: "0001-01-01T00:00:00Z"
+      generatorURL: "http://localhost:9090/graph?g0.expr=increase%28demo_app_db_pool_exhausted_total%5B2m%5D%29%20%3E%205&g0.tab=1"
+      fingerprint: db01pool02exhausted03
+
+recorded_context:
+  log_lines:
+    - line: "ERROR db_pool: connection pool exhausted (max=2); rejecting query — concurrent demand exceeds pool capacity"
+      labels: {service: demo-app, component: db_pool, level: error}
+    - line: "ERROR db_pool: connection pool exhausted (max=2); rejecting query — concurrent demand exceeds pool capacity"
+      labels: {service: demo-app, component: db_pool, level: error}
+    - line: "ERROR db_pool: connection pool exhausted (max=2); rejecting query — concurrent demand exceeds pool capacity"
+      labels: {service: demo-app, component: db_pool, level: error}
+  metric_samples:
+    - metric: {__name__: demo_app_db_pool_exhausted_total, service: demo-app}
+      value: 14
+
+ground_truth:
+  expect_patch: true
+  expected_files: [check_db_pool.py]
+  root_cause_keywords: [pool, connection, MAX_CONNECTIONS]

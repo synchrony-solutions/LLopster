@@ -1,0 +1,48 @@
+{# HTMX swap target for trigger progress polling.
+   When terminal, the route adds HX-Redirect so HTMX navigates to /runs/{id}.
+   While non-terminal, this fragment polls itself every 2s. #}
+<div id="trigger-status"
+     {% if not terminal %}
+     hx-get="{{ url_for('trigger_progress_partial', run_id=run.id) }}"
+     hx-trigger="every 2s"
+     hx-swap="outerHTML"
+     {% endif %}>
+
+    <div class="section">
+        <h3>Pipeline status</h3>
+        <div class="body">
+            <dl class="kv">
+                <dt>Run ID</dt>
+                <dd><code>{{ run.id }}</code></dd>
+                <dt>Alert</dt>
+                <dd>{{ run.alertname }}</dd>
+                <dt>Service</dt>
+                <dd>{{ run.service or '—' }}</dd>
+                <dt>Status</dt>
+                <dd>
+                    <span class="{{ status_class(run.processing_status) }}">{{ run.processing_status }}</span>
+                    {% if not terminal %}<span class="live-dot" style="margin-left: 6px;"></span>{% endif %}
+                </dd>
+                {% if run.error_message %}
+                <dt>Error</dt>
+                <dd class="error-banner" style="margin: 0;">{{ run.error_message }}</dd>
+                {% endif %}
+            </dl>
+        </div>
+    </div>
+
+    {% if terminal %}
+    {# Hardcoded /runs/{id} — `run_detail` is registered on the dashboard
+       process, not the agent. In production the shared ingress routes
+       /runs/* to the dashboard pod, so the link works as a normal URL. #}
+    <div class="muted" style="margin-top: 12px; text-align: center;">
+        Pipeline complete — redirecting to
+        <a href="/runs/{{ run.id }}">run detail</a>…
+    </div>
+    {% else %}
+    <div class="muted" style="margin-top: 12px; text-align: center;">
+        Collecting context → generating patch → posting outcomes…
+    </div>
+    {% endif %}
+
+</div>
