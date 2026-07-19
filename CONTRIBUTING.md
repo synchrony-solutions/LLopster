@@ -85,15 +85,28 @@ These are the house rules the codebase already follows — match them:
 
 ## Pull request process
 
+`main` is protected: there are no direct pushes, and the merge is gated on CI
+and review. Concretely:
+
 1. Fork the repo and create a branch off `main`
    (`git checkout -b fix/short-description`).
 2. Make your change; add or update tests.
 3. Run `.venv/bin/python -m pytest tests/` and make sure it's green.
 4. Open a PR against `main`. Describe **what** changed and **why**; link any
    related issue. Draft PRs are welcome for early feedback.
-5. A maintainer will review. Security-sensitive areas (diff application, the
-   inbound-auth surface, the GitHub/token path, license verification) get extra
-   scrutiny — expect questions.
+5. **CI must pass.** `pytest` runs on every PR as a *required* status check and
+   blocks the merge until green; keep your branch up to date with `main`.
+6. **A code-owner review is required.** At least one approving review from the
+   relevant [CODEOWNERS](.github/CODEOWNERS) is mandatory before merge. Pushing
+   new commits dismisses stale approvals, and open review threads must be
+   resolved. Security-sensitive areas (diff application, the inbound-auth
+   surface, the GitHub/token path, license verification) get extra scrutiny —
+   expect questions.
+7. History on `main` is kept **linear** — no merge commits or force-pushes — so
+   expect to rebase (or squash) rather than merge `main` into your branch.
+
+Releases are cut by pushing a `v*` tag, which is restricted to the release team;
+regular contributions never need to tag.
 
 ### Sign-offs (DCO)
 
