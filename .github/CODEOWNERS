@@ -1,0 +1,22 @@
+# Code owners — routes the "require Code Owner review" rule in the main-branch
+# ruleset. Later entries win over earlier ones for overlapping paths.
+#
+# NOTE: the @synchrony-solutions/* teams referenced here must exist and hold
+# write (or higher) on this repo before these entries take effect — GitHub
+# silently ignores owners it can't resolve. See the Phase 1 team setup:
+#   gh api orgs/synchrony-solutions/teams -f name=llopster-maintainers -f privacy=closed
+#   gh api orgs/synchrony-solutions/teams -f name=llopster-release -f privacy=closed
+
+# Default: any change needs a maintainer review.
+*                     @synchrony-solutions/llopster-maintainers
+
+# Deploy surface: the chart is what customers install — release team owns it.
+/helm-chart/          @synchrony-solutions/llopster-release
+
+# CI + repo policy (workflows, this file, dependabot): admin-only review, so a
+# compromised or careless write account can't loosen the pipeline that gates it.
+# Multiple owners listed so the author of a .github/ PR can always get a
+# code-owner review from someone else (self-approval isn't allowed and the
+# main-branch ruleset has no bypass). Keep at least two people here; revisit
+# this line when admin roles are consolidated (Phase 1 demotion).
+/.github/             @braswent @fenimors @jocobtt

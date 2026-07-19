@@ -4,28 +4,28 @@ name: Tests
 # sqlite+aiosqlite in-memory and mocked HTTP/Anthropic clients (no live API
 # calls, no external services), so the job needs nothing but pip.
 
+# No path filter on pull_request: `pytest` is a required status check in the
+# main-branch ruleset, and a path-filtered workflow that never triggers never
+# reports — which would leave e.g. docs-only PRs unmergeable. The suite is
+# fully mocked and fast, so running it on every PR is cheap.
 on:
   pull_request:
-    paths:
-      - "src/**"
-      - "tests/**"
-      - "alembic/**"
-      - "requirements.txt"
-      - "pyproject.toml"
-      - "scripts/sync_test_count.py"
-      - "README.md"
-      - ".github/workflows/tests.yml"
   push:
     branches: [main]
   workflow_dispatch:
+
+# Least-privilege token: this workflow only reads the repo. Nothing here
+# should ever write back (comments, releases, packages).
+permissions:
+  contents: read
 
 jobs:
   pytest:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
           cache: pip
