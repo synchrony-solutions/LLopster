@@ -11,5 +11,5 @@
 #                   LLOPSTER_PACKS_DIR and entitled via LLOPSTER_PACK_TOKEN —
 #                   entitlement-gated. Absent = Community prompts (default).
 demo-app:
-  codebase_path: ../demo-app
-  github_repo: synchrony-solutions/llmoki-demo-app
+  codebase_path: ./demo-app
+  github_repo: synchrony-solutions/llopster-demo

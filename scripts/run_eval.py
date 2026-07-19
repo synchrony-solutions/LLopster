@@ -56,7 +56,7 @@ def _build_services(codebase_path: str) -> ServiceRegistry:
             "demo-app": ServiceConfig(
                 name="demo-app",
                 codebase_path=codebase_path,
-                github_repo="synchrony-solutions/llmoki-demo-app",
+                github_repo="synchrony-solutions/llopster-demo",
             )
         }
     )

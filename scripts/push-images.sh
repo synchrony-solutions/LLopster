@@ -202,7 +202,7 @@ Create the file (gitignored — never commit) with content like:
         ANTHROPIC_API_KEY: "sk-ant-..."
         SLACK_WEBHOOK_URL: "https://hooks.slack.com/services/..."
         GITHUB_TOKEN: "ghp_..."
-        GITHUB_REPO: "synchrony-solutions/llmoki-demo-app"
+        GITHUB_REPO: "synchrony-solutions/llopster-demo"
     postgresql:
       auth:
         password: "choose-a-strong-password"

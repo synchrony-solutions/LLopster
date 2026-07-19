@@ -52,6 +52,8 @@ The webhook is non-blocking — it returns in <100ms with a `run_id` regardless 
 
 Per-alert flow lives in [src/agent/processor.py](src/agent/processor.py); the pre-pipeline filter is [src/agent/alert_filter.py](src/agent/alert_filter.py); the webhook entry point is [src/api/main.py](src/api/main.py). Each integration is independently disable-able by leaving its env var unset (warning logged, no crash).
 
+**Two processes.** LLopster runs as two containers sharing one database: the **agent** (`:8000`) receives webhooks, runs the pipeline, and runs the background tasks; the **dashboard** (`:3001`) is a read-only UI + JSON API over the same data. They're split so the dashboard keeps serving run history even if the agent is stuck in a crash-loop.
+
 ## Quickstart (local evaluation)
 
 > **This is local evaluation, not production.** `docker compose` brings up everything in one Docker network with bundled Prometheus/Loki/Grafana, a SQLite file, and no inbound auth by default. It's the fastest way to see the loop work end to end. For a real deployment, see [docs/PRODUCTION.md](docs/PRODUCTION.md) — production runs the Helm chart against your cluster's existing **BYO** ("bring your own") Prometheus + Loki, not a bundled stack.
@@ -68,6 +70,10 @@ Edit `.env`:
 
 ```env
 ANTHROPIC_API_KEY=sk-ant-...
+
+# Standard Anthropic accounts must set this false — the 1-hour prompt-cache TTL
+# is a beta and every Sonnet/Opus call 400s without it. Defaults to true.
+EXTENDED_CACHE_TTL=false  # set true only if your account has the extended-cache-ttl beta
 
 # Optional integrations — leave blank to disable that feature
 SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...
@@ -88,7 +94,8 @@ docker compose up -d --build
 
 This brings up everything, including the agent itself:
 
-- **agent** at `http://localhost:8000` — FastAPI webhook receiver + dashboard (visit `/runs` in a browser)
+- **agent** at `http://localhost:8000` — FastAPI webhook receiver + pipeline (no UI; serves `/webhook`, `/health`, `/trigger`)
+- **dashboard** at `http://localhost:3001` — the run history UI (visit `/runs` in a browser)
 - **Prometheus** at `http://localhost:9090` — scraping the demo-app
 - **Loki** at `http://localhost:3100` — receiving logs from the demo-app
 - **Grafana** at `http://localhost:3000` (admin / admin)
@@ -97,7 +104,7 @@ This brings up everything, including the agent itself:
 
 `--build` is required after changes to `src/`, `requirements.txt`, or `demo-app/` source.
 
-The agent reads its config from `.env` automatically (compose passes the variables through). `services.yaml` and `../demo-app` are bind-mounted into the container, so you can edit either without rebuilding the image. You should see startup warnings in `docker compose logs agent` for any optional integration whose env var is unset (Slack, GitHub) — that's expected, not a failure.
+The agent reads its config from `.env` automatically (compose passes the variables through). `services.yaml` and `./demo-app` are bind-mounted into the container, so you can edit either without rebuilding the image. You should see startup warnings in `docker compose logs agent` for any optional integration whose env var is unset (Slack, GitHub) — that's expected, not a failure.
 
 ### 3. Install Python dependencies (for tests + local dev only)
 
@@ -119,7 +126,7 @@ The agent supports multiple services, each with its own source directory and tar
 ```yaml
 demo-app:
   codebase_path: ./demo-app
-  github_repo: synchrony-solutions/llmoki-demo-app
+  github_repo: synchrony-solutions/llopster-demo
 
 payments-api:
   codebase_path: /repos/payments-api
@@ -231,33 +238,28 @@ curl -s -X POST http://localhost:8000/webhook \
 
 ### What success looks like
 
-A successful response looks roughly like:
+The webhook is non-blocking, so the POST returns **immediately** — before the pipeline has run — with a `run_id` and `status: pending`:
 
 ```json
 {
   "received": 1,
   "alerts": [
     {
+      "run_id": "abc-123",
       "alertname": "HelmValuesMisconfigured",
-      "log_lines": 47,
-      "metric_samples": 1,
-      "errors": [],
-      "patch": {
-        "model": "claude-opus-4-7",
-        "input_tokens": 11006,
-        "output_tokens": 672,
-        "cache_read": 10240,
-        "cache_creation": 0,
-        "confidence": 5,
-        "slack_notified": true,
-        "pr_url": "https://github.com/owner/repo/pull/42"
-      }
+      "status": "pending"
     }
   ]
 }
 ```
 
-Expect:
+`status: pending` here is expected, **not** a failure — it just means the run was accepted and the pipeline is running in the background. Watch the outcome on the dashboard run detail at `http://localhost:3001/runs/abc-123`, or poll the JSON:
+
+```bash
+curl -s http://localhost:3001/api/runs/abc-123 | jq
+```
+
+Once the run reaches `done`, that payload is where success shows up. Expect:
 - `log_lines > 0` — Loki query returned something (timestamp is current, demo-app is pushing logs)
 - `confidence` ≥ `PATCH_CONFIDENCE_THRESHOLD` (default 4) — Claude's self-rating cleared the gate
 - `slack_notified: true` — Slack message was delivered (if `SLACK_WEBHOOK_URL` is set)
@@ -275,7 +277,7 @@ Copy one of the existing fixtures and edit:
 
 ## Dashboard
 
-Open **`http://localhost:8000/`** once the stack is up. Server-rendered Jinja2 + HTMX (no JS build chain). Four pages, accessed from the top nav:
+Open **`http://localhost:3001/`** once the stack is up. Server-rendered Jinja2 + HTMX (no JS build chain). Four pages, accessed from the top nav:
 
 **Runs list (`/runs`)** — every alert the agent has processed, newest first. Columns: alertname, service, severity pill, processing-status pill (`pending` / `collecting` / `generating` / `posting` / `done` / `skipped` / `failed`), confidence badge, PR link with live status (open/merged/closed via the background `pr_poller`), Slack delivery state. Click any row for the detail view. Filter by service, alertname, or free-text search across alertname/service/LLM-response-text via the `q` field. Paginate with prev/next. While any run is in progress the table auto-refreshes every 2 seconds via HTMX polling and stops on its own once everything is terminal. A footer shows current retention status — `Retention: runs older than 90 days are pruned automatically — last sweep 2026-05-05 08:25:14 UTC`.
 
@@ -363,13 +365,13 @@ curl -s -X POST http://localhost:8000/webhook \
 # → {"received": 1, "alerts": [{"run_id": "abc-123", "alertname": "...", "status": "pending"}]}
 
 # List recent runs
-curl -s http://localhost:8000/api/runs | jq '.items[] | {alertname, processing_status, confidence, pr_url}'
+curl -s http://localhost:3001/api/runs | jq '.items[] | {alertname, processing_status, confidence, pr_url}'
 
 # Get full detail for one run
-curl -s http://localhost:8000/api/runs/abc-123 | jq
+curl -s http://localhost:3001/api/runs/abc-123 | jq
 
 # Filter
-curl -s 'http://localhost:8000/api/runs?service=demo-app&limit=10' | jq
+curl -s 'http://localhost:3001/api/runs?service=demo-app&limit=10' | jq
 ```
 
 ### Database location and inspection
@@ -378,7 +380,7 @@ In the compose quickstart, the SQLite file lives at `/app/data/llopster.db` insi
 
 ```bash
 # Easiest: use the JSON API (works from any host)
-curl -s http://localhost:8000/api/runs | jq
+curl -s http://localhost:3001/api/runs | jq
 
 # Or copy the DB file out and open with whatever sqlite tool you like
 docker compose cp agent:/app/data/llopster.db /tmp/llopster.db
@@ -518,7 +520,7 @@ LLopster is the agent. The cluster it runs in is modeled by a small constellatio
 |---|---|
 | **[synchrony-solutions/LLopster](https://github.com/synchrony-solutions/LLopster)** | **This repo** — LLopster agent + dashboard + Helm chart. |
 | [synchrony-solutions/testbed-infra](https://github.com/synchrony-solutions/testbed-infra) | Shared observability stack (kube-prometheus-stack + Loki + Grafana Alloy) in the `monitoring` namespace. Stands in for a customer's existing monitoring; LLopster connects to it in BYO mode. |
-| [synchrony-solutions/llmoki-demo-app](https://github.com/synchrony-solutions/llmoki-demo-app) | Example monitored service #1 — 5 intentional bugs, metrics on `:8001`. PRs from `demo-app` alerts land here. |
+| [synchrony-solutions/llopster-demo](https://github.com/synchrony-solutions/llopster-demo) | Example monitored service #1 — 5 intentional bugs, metrics on `:8001`. PRs from `demo-app` alerts land here. |
 | [synchrony-solutions/order-service](https://github.com/synchrony-solutions/order-service) | Example monitored service #2 — 3 intentional bugs, metrics on `:8002`. PRs from `order-service` alerts land here. |
 
 Locally these are checked out as siblings: `~/dev/LLopster`, `~/dev/testbed-infra`, `~/dev/demo-app`, `~/dev/order-service`.
@@ -535,10 +537,6 @@ LLopster is **source-available** under the **[Functional Source License v1.1 (FS
 This is *source-available*, not OSI "open source," and that's deliberate: it keeps the code transparent and self-hostable (the trust property our buyers need) while reserving the right to commercialize the product to us during the window that matters. The **LLopster** name and logo are trademarks and are not licensed for others' commercial use.
 
 > Not legal advice — see [LICENSE.md](LICENSE.md) for the binding terms.
-
-## About the name
-
-The product is **LLopster** (lowercase: `llopster`). It began life under the codename `loki-llm`; the rename is complete throughout — loggers (`llopster.*`), the PR branch prefix (`llopster/`), the DB filename, the dashboard/agent UI, the published Docker images (`ghcr.io/synchrony-solutions/llopster`), and all Kubernetes resources. You may still spot the old codename in historical container-image tags.
 
 ## Where to read next
 

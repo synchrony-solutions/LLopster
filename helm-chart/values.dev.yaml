@@ -101,18 +101,18 @@ alertRules:
 #
 # NOTE the two services target DIFFERENT repos — this is exactly the
 # decoupling the testbed proves: a demo-app alert must open its PR on
-# llmoki-demo-app, an order-service alert on order-service, never crossed.
+# llopster-demo, an order-service alert on order-service, never crossed.
 agent:
   servicesConfig:
     demo-app:
       codebase_path: /codebases/demo-app
-      github_repo: synchrony-solutions/llmoki-demo-app
+      github_repo: synchrony-solutions/llopster-demo
     order-service:
       codebase_path: /codebases/order-service
       github_repo: synchrony-solutions/order-service
   codebases:
     - name: demo-app
-      gitRepo: https://github.com/synchrony-solutions/llmoki-demo-app.git
+      gitRepo: https://github.com/synchrony-solutions/llopster-demo.git
       branch: main
     - name: order-service
       gitRepo: https://github.com/synchrony-solutions/order-service.git

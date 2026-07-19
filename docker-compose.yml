@@ -67,7 +67,7 @@ services:
       # Service registry + per-service codebase paths are mounted live so
       # adding a service or editing source doesn't require an image rebuild.
       - ./config/services.yaml:/app/config/services.yaml:ro
-      - ../demo-app:/app/demo-app:ro
+      - ./demo-app:/app/demo-app:ro
       # Persistent run history database.
       - agent-data:/app/data
     depends_on:
@@ -93,9 +93,9 @@ services:
       - agent
     restart: unless-stopped
 
-# Assumes that demo app exists at ../demo-app relative to the compose file.  Adjust the build context if it's located elsewhere.
+  # Demo app ships in-repo at ./demo-app with its own Dockerfile.
   demo-app:
-    build: ../demo-app
+    build: ./demo-app
     container_name: llopster-demo-app
     ports:
       - "8001:8001"
