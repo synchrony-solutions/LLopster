@@ -21,14 +21,33 @@ Three independent toggles in [helm-chart/values.yaml](../helm-chart/values.yaml)
 - `prometheus.bundled` / `loki.bundled` — `true` installs the community subchart; `false` skips it and uses `prometheus.url` / `loki.url` pointing at your existing query API.
 - `alertRules.enabled` — opt in to LLopster's curated `PrometheusRule` starter pack (cross-cutting infra alerts annotated with hints the prompt uses). Requires the Prometheus Operator; for raw Prometheus, see [helm-chart/docs/integration-recipes/](../helm-chart/docs/integration-recipes/).
 
+The chart is published to ghcr as an OCI artifact on every tagged release —
+no repo clone or `helm repo add` needed:
+
+```bash
+# BYO observability (production): point at your existing Prometheus + Loki and
+# wire your existing AlertManager to LLopster's webhook (integration-recipes).
+helm install llopster oci://ghcr.io/synchrony-solutions/charts/llopster \
+  --version 0.2.0 \
+  --namespace llopster --create-namespace \
+  --set prometheus.bundled=false \
+  --set prometheus.url=http://<your-prometheus>.<ns>.svc:9090 \
+  --set loki.bundled=false \
+  --set loki.url=http://<your-loki>.<ns>.svc:3100 \
+  --set agent.secrets.ANTHROPIC_API_KEY=sk-ant-... \
+  --set agent.secrets.GITHUB_TOKEN=ghp_... \
+  --set agent.secrets.SLACK_WEBHOOK_URL=https://hooks.slack.com/...
+```
+
+Installing from a clone instead (development, or unreleased chart changes):
+
 ```bash
 # From the repo root
 # bootstrap-helm.sh fetches the optional subchart tarballs (required even in
 # BYO mode — Helm needs declared dependencies present on disk to render).
 ./scripts/bootstrap-helm.sh --update
 
-# BYO observability (production): point at your existing Prometheus + Loki and
-# wire your existing AlertManager to LLopster's webhook (integration-recipes).
+# Same flags as the OCI install above:
 helm install llopster helm-chart/ \
   --namespace llopster --create-namespace \
   --set prometheus.bundled=false \

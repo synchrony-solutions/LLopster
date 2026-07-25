@@ -1,13 +1,17 @@
 apiVersion: v2
-name: LLopster
+# Lowercase on purpose: the chart is published to an OCI registry
+# (oci://ghcr.io/synchrony-solutions/charts/llopster) and OCI repository
+# names must be lowercase. Only the cosmetic helm.sh/chart label depends on
+# this — resource names and selectors are static (app: llopster-*).
+name: llopster
 description: |
   LLopster agent + dashboard, with optional bundled observability stack
   (Prometheus, AlertManager, Loki) for evaluation. In production, set
   prometheus.bundled=false and loki.bundled=false and point LLopster at
   your existing observability via prometheus.url / loki.url.
 type: application
-version: 0.1.0
-appVersion: "0.1.0"
+version: 0.2.0
+appVersion: "0.2.0"
 
 dependencies:
   # Bundled observability. Toggled by prometheus.bundled / loki.bundled in

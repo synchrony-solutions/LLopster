@@ -1,0 +1,83 @@
+name: Release
+
+# Publishes a versioned release: the agent+dashboard image and the packaged
+# Helm chart, both to ghcr, plus a GitHub Release with generated notes.
+#
+# Trigger: pushing a v* tag. Two human gates sit in front of anything being
+# published:
+#   1. tag creation is restricted to the llopster-release team by the
+#      "release-tags" repository ruleset, and
+#   2. the `release` environment requires a reviewer approval (with
+#      self-review prevented) before the job starts.
+#
+# The pushed tag must equal "v" + the chart version in helm-chart/Chart.yaml;
+# the guard step fails the run on mismatch so a mistagged release publishes
+# nothing. Image is pushed before the chart so a fresh `helm install` of the
+# just-published chart never ImagePullBackOffs on a missing appVersion tag.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write # create the GitHub Release
+  packages: write # push image + chart to ghcr
+
+env:
+  IMAGE: ghcr.io/synchrony-solutions/llopster
+  CHART_OCI: oci://ghcr.io/synchrony-solutions/charts
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Read chart metadata and verify tag matches
+        id: meta
+        run: |
+          CHART_VERSION="$(sed -n 's/^version:[[:space:]]*"\{0,1\}\([^"]*\)"\{0,1\}[[:space:]]*$/\1/p' helm-chart/Chart.yaml | head -1)"
+          APP_VERSION="$(sed -n 's/^appVersion:[[:space:]]*"\{0,1\}\([^"]*\)"\{0,1\}[[:space:]]*$/\1/p' helm-chart/Chart.yaml | head -1)"
+          echo "chart_version=${CHART_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "app_version=${APP_VERSION}" >> "$GITHUB_OUTPUT"
+          if [ "v${CHART_VERSION}" != "${GITHUB_REF_NAME}" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match helm-chart/Chart.yaml version ${CHART_VERSION} — bump the chart version in a PR first, then re-tag"
+            exit 1
+          fi
+
+      - name: Log in to ghcr
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Build and push image
+        run: |
+          docker build \
+            --tag "${IMAGE}:${{ steps.meta.outputs.app_version }}" \
+            --tag "${IMAGE}:${GITHUB_SHA::7}" \
+            --tag "${IMAGE}:latest" \
+            .
+          docker push --all-tags "${IMAGE}"
+
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+        with:
+          version: v3.16.3
+
+      - name: Package chart
+        run: |
+          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+          helm repo add grafana https://grafana.github.io/helm-charts
+          helm dependency build ./helm-chart
+          helm package ./helm-chart
+
+      - name: Push chart to OCI registry
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+          helm push "llopster-${{ steps.meta.outputs.chart_version }}.tgz" "${CHART_OCI}"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --generate-notes \
+            "llopster-${{ steps.meta.outputs.chart_version }}.tgz"
