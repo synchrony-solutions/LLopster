@@ -82,7 +82,15 @@ class Config:
     investigation_enabled: bool = os.getenv("INVESTIGATION_ENABLED", "true").lower() in {"true", "1", "yes", "on"}
     anthropic_investigation_model: str = os.getenv("ANTHROPIC_INVESTIGATION_MODEL", "claude-sonnet-4-6")
 
+    # Notification channel. "slack" (default) posts Block Kit to
+    # SLACK_WEBHOOK_URL; "teams" posts an Adaptive Card to TEAMS_WEBHOOK_URL
+    # (a Power Automate Workflows webhook); "none" disables notifications
+    # entirely. See src/integrations/notifier.py. Unknown values fall back to
+    # "slack". Back-compat: an existing SLACK_WEBHOOK_URL-only deployment is
+    # unchanged (default provider = slack).
+    notifier_provider: str = os.getenv("NOTIFIER_PROVIDER", "slack").strip().lower()
     slack_webhook_url: str = os.getenv("SLACK_WEBHOOK_URL", "")
+    teams_webhook_url: str = os.getenv("TEAMS_WEBHOOK_URL", "")
 
     # GitHub token is global; per-service repo comes from services.yaml.
     github_token: str = os.getenv("GITHUB_TOKEN", "")
@@ -181,6 +189,17 @@ class Config:
         if self.llm_provider == "bedrock":
             return True
         return bool(self.anthropic_api_key)
+
+    @property
+    def notifier_configured(self) -> bool:
+        """Whether the active notification provider has a webhook URL. False
+        for provider=none, or when the selected provider's URL is unset.
+        Drives the dashboard's connection-status surfaces."""
+        if self.notifier_provider == "teams":
+            return bool(self.teams_webhook_url)
+        if self.notifier_provider == "none":
+            return False
+        return bool(self.slack_webhook_url)
 
 
 config = Config()

@@ -53,7 +53,8 @@ async def test_status_returns_configured_flags():
             r = await c.get("/api/integrations/status")
 
     body = r.json()
-    assert body["slack"]["configured"] is True
+    assert body["notifier"]["configured"] is True
+    assert body["notifier"]["provider"] == "slack"
     assert body["github"]["configured"] is True
     assert body["anthropic"]["configured"] is True
     assert body["anthropic"]["model"] == "claude-opus-4-7"
@@ -111,7 +112,7 @@ async def test_status_shows_unconfigured_state():
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
             r = await c.get("/api/integrations/status")
     body = r.json()
-    assert body["slack"]["configured"] is False
+    assert body["notifier"]["configured"] is False
     assert body["github"]["configured"] is False
     assert body["anthropic"]["configured"] is False
 
@@ -153,11 +154,11 @@ async def test_status_bedrock_provider():
 
 
 # ---------------------------------------------------------------------------
-# POST /api/integrations/test/slack
+# POST /api/integrations/test/notifier
 # ---------------------------------------------------------------------------
 
-async def test_test_slack_success():
-    fake_cfg = replace(_ia.config, slack_webhook_url="https://hooks.slack.com/x")
+async def test_test_notifier_slack_success():
+    fake_cfg = replace(_ia.config, notifier_provider="slack", slack_webhook_url="https://hooks.slack.com/x")
     mock_resp = MagicMock()
     mock_resp.status_code = 200
     http = AsyncMock()
@@ -166,24 +167,57 @@ async def test_test_slack_success():
 
     with patch.object(_ia, "config", fake_cfg):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
-            r = await c.post("/api/integrations/test/slack")
+            r = await c.post("/api/integrations/test/notifier")
 
     assert r.json() == {"ok": True, "detail": "Connected"}
 
 
-async def test_test_slack_not_configured():
-    fake_cfg = replace(_ia.config, slack_webhook_url="")
+async def test_test_notifier_teams_success_accepts_202():
+    """Teams Workflows returns 202 Accepted and gets the Adaptive Card
+    envelope, not the Slack text payload."""
+    fake_cfg = replace(
+        _ia.config, notifier_provider="teams",
+        teams_webhook_url="https://prod-1.westus.logic.azure.com/workflows/x",
+    )
+    mock_resp = MagicMock()
+    mock_resp.status_code = 202
+    http = AsyncMock()
+    http.post = AsyncMock(return_value=mock_resp)
+    app = _build_app(http)
+
+    with patch.object(_ia, "config", fake_cfg):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            r = await c.post("/api/integrations/test/notifier")
+
+    assert r.json() == {"ok": True, "detail": "Connected"}
+    payload = http.post.call_args.kwargs["json"]
+    assert payload["type"] == "message"  # Teams envelope, not {"text": ...}
+
+
+async def test_test_notifier_not_configured():
+    fake_cfg = replace(_ia.config, notifier_provider="slack", slack_webhook_url="")
     app = _build_app()
     with patch.object(_ia, "config", fake_cfg):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
-            r = await c.post("/api/integrations/test/slack")
+            r = await c.post("/api/integrations/test/notifier")
     body = r.json()
     assert body["ok"] is False
     assert "not set" in body["detail"]
 
 
-async def test_test_slack_handles_non_200():
-    fake_cfg = replace(_ia.config, slack_webhook_url="https://hooks.slack.com/bad")
+async def test_test_notifier_disabled_when_none():
+    fake_cfg = replace(_ia.config, notifier_provider="none")
+    app = _build_app()
+    with patch.object(_ia, "config", fake_cfg):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            r = await c.post("/api/integrations/test/notifier")
+    body = r.json()
+    assert body["ok"] is False
+    assert "disabled" in body["detail"]
+
+
+async def test_test_notifier_handles_non_2xx():
+    fake_cfg = replace(_ia.config, notifier_provider="slack", slack_webhook_url="https://hooks.slack.com/bad")
     mock_resp = MagicMock()
     mock_resp.status_code = 403
     http = AsyncMock()
@@ -192,7 +226,7 @@ async def test_test_slack_handles_non_200():
 
     with patch.object(_ia, "config", fake_cfg):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
-            r = await c.post("/api/integrations/test/slack")
+            r = await c.post("/api/integrations/test/notifier")
     body = r.json()
     assert body["ok"] is False
     assert "403" in body["detail"]

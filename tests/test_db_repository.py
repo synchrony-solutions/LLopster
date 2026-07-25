@@ -163,9 +163,9 @@ async def test_record_pr_skipped(session):
     assert fetched.pr_skip_reason == "confidence too low"
 
 
-async def test_record_slack(session):
+async def test_record_notification(session):
     run = await repo.create_run_from_alert(session, _alert(), raw_payload={})
-    await repo.record_slack(session, run.id, notified=True)
+    await repo.record_notification(session, run.id, notified=True)
     fetched = await repo.get_run(session, run.id)
     assert fetched.slack_notified is True
     assert fetched.slack_skip_reason is None

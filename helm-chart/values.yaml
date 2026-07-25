@@ -410,6 +410,17 @@ agent:
     annotations: {}
     #   eks.amazonaws.com/role-arn: arn:aws:iam::<account-id>:role/<bedrock-role>
 
+  # Notification channel for patch proposals.
+  #   provider: slack  → Slack incoming webhook (agent.secrets.SLACK_WEBHOOK_URL)
+  #   provider: teams  → Microsoft Teams via a Power Automate Workflows webhook
+  #                      (agent.secrets.TEAMS_WEBHOOK_URL — REQUIRED when teams,
+  #                      the chart fails to render without it)
+  #   provider: none   → notifications disabled (no messaging system)
+  # Back-compat: default "slack" keeps existing SLACK_WEBHOOK_URL installs
+  # unchanged. See docs for creating the Teams Workflow that yields the URL.
+  notifications:
+    provider: slack
+
   # Optional NetworkPolicy restricting who can reach the agent's webhook/API
   # port (8000) to in-cluster sources. Opt-in: it only takes effect on a CNI
   # that enforces NetworkPolicy, and a too-strict policy would drop AlertManager
@@ -519,6 +530,10 @@ agent:
   secrets:
     ANTHROPIC_API_KEY: CHANGEME-anthropic-api-key
     SLACK_WEBHOOK_URL: CHANGEME-https://hooks.slack.com/services/...
+    # Microsoft Teams — only when agent.notifications.provider=teams. This is
+    # the Power Automate "Workflows" incoming-webhook URL (the successor to the
+    # retiring O365 connector). Leave empty for the Slack / none providers.
+    TEAMS_WEBHOOK_URL: ""
     GITHUB_TOKEN: CHANGEME-github-pat
     GITHUB_REPO: CHANGEME-owner/repo
     # Shared secret guarding the inbound write surfaces (/webhook, trigger,

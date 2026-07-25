@@ -8,7 +8,7 @@ This is the production path. **`docker compose` (the [README quickstart](../READ
 - [Helm 3](https://helm.sh/docs/intro/install/)
 - Your cluster's **existing Prometheus + Loki** query APIs reachable from the cluster (BYO mode — see [Install modes](#install-modes) below). LLopster does not need to be the thing that scrapes your apps; it only queries.
 - The **Prometheus Operator** (e.g. kube-prometheus-stack), *only if* you plan to set `alertRules.enabled=true` to install LLopster's curated `PrometheusRule` starter pack as a CRD
-- Claude access — either an [Anthropic API key](https://console.anthropic.com/), or **AWS Bedrock** (`agent.llm.provider=bedrock`; see [AWS Bedrock provider](#aws-bedrock-provider)); optionally a GitHub token (PR creation) and a Slack incoming webhook (notifications)
+- Claude access — either an [Anthropic API key](https://console.anthropic.com/), or **AWS Bedrock** (`agent.llm.provider=bedrock`; see [AWS Bedrock provider](#aws-bedrock-provider)); optionally a GitHub token (PR creation) and a notification channel — **Slack** or **Microsoft Teams** (`agent.notifications.provider`; see [Notifications](#notifications))
 
 `./scripts/bootstrap-helm.sh` only fetches the chart's optional subchart tarballs (Helm needs declared dependencies present on disk to render, even when you're not installing them) — it does not provision a cluster, install `kubectl`/Helm, or stand up Prometheus/Loki for you.
 
@@ -95,6 +95,25 @@ helm install llopster oci://ghcr.io/synchrony-solutions/charts/llopster \
 **Credentials — static keys (fallback).** For clusters without IRSA / pod-identity, set `agent.secrets.AWS_ACCESS_KEY_ID` + `agent.secrets.AWS_SECRET_ACCESS_KEY` (and `agent.secrets.AWS_SESSION_TOKEN` for temporary credentials). These land in the `llopster-agent` Secret and are wired to the agent only when present; leave them empty to use the IRSA path above.
 
 The dashboard's Settings → connection card reflects the active provider, region, and model so you can confirm what's in use post-install.
+
+## Notifications
+
+LLopster posts each patch proposal (root cause, diff, confidence, PR button) to a chat channel. Select it with `agent.notifications.provider`:
+
+- **`slack`** (default) — Slack incoming webhook via `agent.secrets.SLACK_WEBHOOK_URL`. Existing installs are unchanged.
+- **`teams`** — Microsoft Teams via a Power Automate **Workflows** incoming webhook. Set `agent.notifications.provider=teams` and `agent.secrets.TEAMS_WEBHOOK_URL` (the chart **requires** the URL when provider=teams and fails to render otherwise). See the **[Teams notifications recipe](integration-recipes/teams-notifications.md)** for creating the workflow and getting the URL.
+- **`none`** — notifications off (the pipeline still opens PRs and records runs in the dashboard).
+
+```bash
+# Microsoft Teams notifications
+helm upgrade --install llopster oci://ghcr.io/synchrony-solutions/charts/llopster \
+  --version 0.2.0 --namespace llopster --create-namespace \
+  # ...prometheus/loki/anthropic values... \
+  --set agent.notifications.provider=teams \
+  --set agent.secrets.TEAMS_WEBHOOK_URL='https://prod-1.westus.logic.azure.com/workflows/...'
+```
+
+The dashboard's Settings → Notifications card shows the active provider and offers a **Test** button that pings the channel.
 
 ## Monitoring LLopster itself
 

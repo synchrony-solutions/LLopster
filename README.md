@@ -8,7 +8,7 @@ An AI-augmented SRE agent: when a Prometheus alert fires, LLopster investigates 
 
 | | |
 |---|---|
-| **What it needs** | Kubernetes, Prometheus, Loki, Claude access (an Anthropic API key **or** AWS Bedrock), GitHub (optional, for PRs), Slack (optional, for notifications) |
+| **What it needs** | Kubernetes, Prometheus, Loki, Claude access (an Anthropic API key **or** AWS Bedrock), GitHub (optional, for PRs), Slack or Microsoft Teams (optional, for notifications) |
 | **Try it locally** | `docker compose up -d --build` — see [Quickstart](#quickstart-local-evaluation) below (~5 min, not production) |
 | **Run it for real** | `helm install llopster oci://ghcr.io/synchrony-solutions/charts/llopster` — see [docs/PRODUCTION.md](docs/PRODUCTION.md) |
 | **License** | Source-available ([FSL-1.1-ALv2](#license)), free to self-host, paid tiers unlock at runtime |
@@ -78,7 +78,10 @@ ANTHROPIC_API_KEY=sk-ant-...
 EXTENDED_CACHE_TTL=false  # set true only if your account has the extended-cache-ttl beta
 
 # Optional integrations — leave blank to disable that feature
+# Notifications: NOTIFIER_PROVIDER=slack (default) | teams | none
 SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...
+# For Microsoft Teams instead: NOTIFIER_PROVIDER=teams and set the Workflows URL
+# TEAMS_WEBHOOK_URL=https://prod-1.westus.logic.azure.com/workflows/...
 GITHUB_TOKEN=ghp_...
 
 # Local stack (defaults are fine)
@@ -305,7 +308,7 @@ After submit, you're redirected to the run detail page where polling shows the p
 
 - `patch_confidence_threshold` — minimum confidence to open a PR (default 4)
 - `log_lookback_minutes` — how far back to query Loki around an alert
-- HTMX-powered "Test connection" buttons for Slack and GitHub credentials (no-op probes that report success/failure inline)
+- HTMX-powered "Test connection" buttons for the active notification channel (Slack/Teams) and GitHub credentials (no-op probes that report success/failure inline)
 - An **API access** card for setting/clearing the inbound shared-secret token (see [Securing the inbound surfaces](#securing-the-inbound-surfaces))
 - A **License** card showing the active tier, entitled features, and expiry, with a field to paste or clear a license key. Unlocks paid tiers without a redeploy and never displays the raw key. See [Tiers & license key](#tiers--license-key).
 
@@ -423,7 +426,9 @@ Caveats:
 | `BEDROCK_MODEL` / `BEDROCK_TRIAGE_MODEL` / `BEDROCK_INVESTIGATION_MODEL` | Bedrock inference-profile model IDs (used when `LLM_PROVIDER=bedrock`; they differ from the direct-API names). | `us.anthropic.claude-{opus-4-7,haiku-4-5,sonnet-4-6}-v1:0` |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` | Optional static AWS creds for Bedrock on clusters without IRSA / pod-identity. Leave unset to use the ambient boto3 credential chain (recommended). | optional |
 | `EXTENDED_CACHE_TTL` | Use the 1-hour prompt-cache TTL beta (`extended-cache-ttl-2025-04-11`). Set to `false` if your account doesn't have the beta. Forced off automatically for Bedrock. | `true` |
-| `SLACK_WEBHOOK_URL` | Slack incoming webhook | optional (disables Slack if unset) |
+| `NOTIFIER_PROVIDER` | Notification channel: `slack` (default), `teams` (Microsoft Teams), or `none` (disabled). See [Notifications](#notifications-slack--microsoft-teams). | `slack` |
+| `SLACK_WEBHOOK_URL` | Slack incoming webhook (used when `NOTIFIER_PROVIDER=slack`) | optional (disables notifications if unset) |
+| `TEAMS_WEBHOOK_URL` | Microsoft Teams Power Automate Workflows webhook (used when `NOTIFIER_PROVIDER=teams`) | optional (required when provider=teams) |
 | `GITHUB_TOKEN` | GitHub PAT with `repo` scope on every service repo | optional (disables PR creation if unset) |
 | `LLOPSTER_API_TOKEN` | Shared secret guarding the inbound write surfaces (`/webhook`, trigger, settings/license). **Empty = auth disabled** (loud startup warning). See [Securing the inbound surfaces](#securing-the-inbound-surfaces). Runtime-overridable via the `api_auth_token` setting (Settings → API access). | optional (auth disabled if unset) |
 | `OPEN_PRS_AS_DRAFT` | Open LLM-authored PRs as drafts for human review (least-privilege). Set `false` to open ready-for-review PRs. Runtime-overridable via `open_prs_as_draft` setting. | `true` |
@@ -461,6 +466,16 @@ helm install llopster oci://ghcr.io/synchrony-solutions/charts/llopster \
 ```
 
 For clusters without IRSA, static keys are an optional fallback — set `agent.secrets.AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` (and `AWS_SESSION_TOKEN` for temporary creds). See [docs/PRODUCTION.md](docs/PRODUCTION.md#aws-bedrock-provider) for the full walkthrough.
+
+## Notifications (Slack / Microsoft Teams)
+
+When a patch is proposed, LLopster posts a message — root cause, the diff, confidence, and a "View Pull Request" button — to your team's chat. Pick the channel with `NOTIFIER_PROVIDER`:
+
+- **`slack`** (default) — posts Block Kit to `SLACK_WEBHOOK_URL` (a Slack incoming webhook). Existing deployments are unchanged.
+- **`teams`** — posts an **Adaptive Card** to `TEAMS_WEBHOOK_URL`, a Microsoft Teams **Power Automate Workflows** incoming webhook (the supported successor to the retiring Office 365 connector). Create the workflow from Teams' *Workflows → "Post to a channel when a webhook request is received"* template to get the URL. See the step-by-step in the **[Teams notifications recipe](docs/integration-recipes/teams-notifications.md)**.
+- **`none`** — notifications disabled, for teams with no chat-based alerting. The pipeline still runs, opens PRs, and records everything in the dashboard; it just doesn't post a message.
+
+The same content renders on both channels, and the dashboard's Settings → Notifications card shows the active provider with a **Test** button. In the Helm chart this is `agent.notifications.provider` (+ `agent.secrets.TEAMS_WEBHOOK_URL` when `teams`).
 
 ## Securing the inbound surfaces
 
@@ -537,7 +552,7 @@ LLopster ships **one image and one Helm chart for every tier** — Community, Bu
 .venv/bin/python -m pytest tests/
 ```
 
-<!--TEST_COUNT-->498<!--/TEST_COUNT--> tests, all passing. Tests use `httpx.MockTransport` for HTTP clients, `unittest.mock.AsyncMock` for the Anthropic client, and `sqlite+aiosqlite:///:memory:` for the database — no live API calls and no on-disk DB run in the suite. HTML route tests render the templates against an in-memory DB and assert on key substrings + the presence/absence of the HTMX poll trigger. Background-task tests (pruner, pr_poller) run with sub-second intervals so the loop is exercised in <0.5s.
+<!--TEST_COUNT-->526<!--/TEST_COUNT--> tests, all passing. Tests use `httpx.MockTransport` for HTTP clients, `unittest.mock.AsyncMock` for the Anthropic client, and `sqlite+aiosqlite:///:memory:` for the database — no live API calls and no on-disk DB run in the suite. HTML route tests render the templates against an in-memory DB and assert on key substrings + the presence/absence of the HTMX poll trigger. Background-task tests (pruner, pr_poller) run with sub-second intervals so the loop is exercised in <0.5s.
 
 ## Related repositories
 

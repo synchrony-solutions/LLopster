@@ -101,7 +101,7 @@ async def replay_scenario(
         services=services,
         patcher=patcher,
         github=None,   # never open a PR from a replay
-        slack=None,    # never notify from a replay
+        notifier=None,    # never notify from a replay
         triage=triage,
         investigator=investigator,
         enforce_cost_breaker=False,

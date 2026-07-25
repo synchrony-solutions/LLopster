@@ -39,6 +39,14 @@ type: Opaque
 stringData:
   ANTHROPIC_API_KEY: {{ .Values.agent.secrets.ANTHROPIC_API_KEY | quote }}
   SLACK_WEBHOOK_URL: {{ .Values.agent.secrets.SLACK_WEBHOOK_URL | quote }}
+  {{- /* Teams Workflows webhook URL. Required when notifications.provider=teams
+     (render fails otherwise, mirroring the Bedrock region guard); otherwise
+     emitted only when set. */ -}}
+  {{- if eq (.Values.agent.notifications.provider | default "slack") "teams" }}
+  TEAMS_WEBHOOK_URL: {{ required "agent.secrets.TEAMS_WEBHOOK_URL is required when agent.notifications.provider=teams" .Values.agent.secrets.TEAMS_WEBHOOK_URL | quote }}
+  {{- else if .Values.agent.secrets.TEAMS_WEBHOOK_URL }}
+  TEAMS_WEBHOOK_URL: {{ .Values.agent.secrets.TEAMS_WEBHOOK_URL | quote }}
+  {{- end }}
   GITHUB_TOKEN: {{ .Values.agent.secrets.GITHUB_TOKEN | quote }}
   GITHUB_REPO: {{ .Values.agent.secrets.GITHUB_REPO | quote }}
   LLOPSTER_LICENSE_KEY: {{ .Values.agent.secrets.LLOPSTER_LICENSE_KEY | default "" | quote }}
@@ -236,9 +244,18 @@ spec:
                 secretKeyRef: { name: llopster-agent, key: AWS_SESSION_TOKEN }
             {{- end }}
             {{- end }}
+            # Notification channel: slack (default) | teams | none. See
+            # agent.notifications in values.yaml.
+            - name: NOTIFIER_PROVIDER
+              value: {{ .Values.agent.notifications.provider | default "slack" | quote }}
             - name: SLACK_WEBHOOK_URL
               valueFrom:
                 secretKeyRef: { name: llopster-agent, key: SLACK_WEBHOOK_URL }
+            {{- if eq (.Values.agent.notifications.provider | default "slack") "teams" }}
+            - name: TEAMS_WEBHOOK_URL
+              valueFrom:
+                secretKeyRef: { name: llopster-agent, key: TEAMS_WEBHOOK_URL }
+            {{- end }}
             - name: GITHUB_TOKEN
               valueFrom:
                 secretKeyRef: { name: llopster-agent, key: GITHUB_TOKEN }

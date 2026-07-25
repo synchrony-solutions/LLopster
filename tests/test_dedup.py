@@ -230,7 +230,7 @@ async def test_processor_skips_when_prior_run_has_open_pr(sessionmaker_fixture):
         services=_services(),
         patcher=patcher,
         github=github,
-        slack=slack,
+        notifier=slack,
     )
 
     async with sm() as s:
@@ -355,7 +355,7 @@ async def test_processor_backoff_skips_after_unproductive_run(sessionmaker_fixtu
         services=_services(),
         patcher=patcher,
         github=github,
-        slack=slack,
+        notifier=slack,
     )
 
     async with sm() as s:
@@ -395,7 +395,7 @@ async def test_processor_backoff_disabled_when_zero(sessionmaker_fixture):
         services=_services(),
         patcher=patcher,
         github=github,
-        slack=slack,
+        notifier=slack,
     )
 
     # Backoff off → collection ran (the pipeline was not short-circuited).
@@ -568,7 +568,7 @@ async def test_processor_skips_within_grace_window(sessionmaker_fixture):
         services=_services(),
         patcher=patcher,
         github=None,
-        slack=None,
+        notifier=None,
     )
 
     async with sm() as s:
@@ -625,7 +625,7 @@ async def test_processor_passes_previous_attempt_past_grace(sessionmaker_fixture
         services=_services(),
         patcher=patcher,
         github=None,
-        slack=None,
+        notifier=None,
     )
 
     # patcher.generate was called with previous_attempt set
@@ -671,7 +671,7 @@ async def test_processor_respects_grace_setting_override(sessionmaker_fixture):
         services=_services(),
         patcher=patcher,
         github=None,
-        slack=None,
+        notifier=None,
     )
 
     # Should have proceeded past dedup and reached the patcher.

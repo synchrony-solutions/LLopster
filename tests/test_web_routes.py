@@ -195,7 +195,7 @@ async def test_run_detail_renders_full_data(app_with_db):
             parsed_diff="--- a/helm-values.yaml\n+++ b/helm-values.yaml\n@@ -2,4 +2,4 @@\n-    memory: \"512MBz\"\n+    memory: \"512Mi\"\n",
         )
         await repo.record_pr(s, run_id, pr_url="https://github.com/owner/repo/pull/42", pr_number=42, pr_branch="llopster/x")
-        await repo.record_slack(s, run_id, notified=True)
+        await repo.record_notification(s, run_id, notified=True)
         await repo.update_status(s, run_id, "done")
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:

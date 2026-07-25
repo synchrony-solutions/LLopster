@@ -173,7 +173,7 @@ async def test_full_pipeline_records_each_phase(sessionmaker_fixture):
         services=_services(),
         patcher=patcher,
         github=github,
-        slack=slack,
+        notifier=slack,
     )
 
     async with sm() as s:
@@ -211,7 +211,7 @@ async def test_unmapped_service_marks_skipped(sessionmaker_fixture):
         services=_services(returns_config=False),
         patcher=patcher,
         github=None,
-        slack=None,
+        notifier=None,
     )
 
     async with sm() as s:
@@ -252,7 +252,7 @@ async def test_pre_filter_skips_known_noise_alertname(sessionmaker_fixture):
         services=_services(),  # service IS registered; filter still rejects on alertname
         patcher=patcher,
         github=None,
-        slack=None,
+        notifier=None,
     )
 
     async with sm() as s:
@@ -285,7 +285,7 @@ async def test_low_confidence_skips_pr(sessionmaker_fixture):
         services=_services(),
         patcher=patcher,
         github=github,
-        slack=slack,
+        notifier=slack,
     )
 
     async with sm() as s:
@@ -325,7 +325,7 @@ async def test_patch_apply_error_fails_the_run(sessionmaker_fixture):
         services=_services(),
         patcher=patcher,
         github=github,
-        slack=slack,
+        notifier=slack,
     )
 
     async with sm() as s:
@@ -361,7 +361,7 @@ async def test_cost_breaker_trip_parks_run_and_flips_to_manual(sessionmaker_fixt
             services=_services(),
             patcher=patcher,
             github=None,
-            slack=None,
+            notifier=None,
         )
 
     async with sm() as s:
@@ -398,7 +398,7 @@ async def test_cost_breaker_bypassed_for_operator_runs(sessionmaker_fixture):
             services=_services(),
             patcher=patcher,
             github=None,
-            slack=slack,
+            notifier=slack,
             enforce_cost_breaker=False,
         )
 
@@ -430,7 +430,7 @@ async def test_no_actionable_patch_skips_pr(sessionmaker_fixture):
         services=_services(),
         patcher=patcher,
         github=github,
-        slack=None,
+        notifier=None,
     )
 
     async with sm() as s:
@@ -463,7 +463,7 @@ async def test_triage_skip_short_circuits_pipeline(sessionmaker_fixture):
         services=_services(),
         patcher=patcher,
         github=None,
-        slack=None,
+        notifier=None,
         triage=triage,
     )
 
@@ -499,7 +499,7 @@ async def test_triage_low_confidence_skip_falls_through_to_pipeline(sessionmaker
         services=_services(),
         patcher=patcher,
         github=None,
-        slack=None,
+        notifier=None,
         triage=triage,
     )
 
@@ -530,7 +530,7 @@ async def test_triage_proceed_runs_full_pipeline(sessionmaker_fixture):
         services=_services(),
         patcher=patcher,
         github=None,
-        slack=None,
+        notifier=None,
         triage=triage,
     )
 
@@ -568,7 +568,7 @@ async def test_critical_severity_bypasses_triage_entirely(sessionmaker_fixture):
         services=_services(),
         patcher=patcher,
         github=None,
-        slack=None,
+        notifier=None,
         triage=triage,
     )
 
@@ -603,7 +603,7 @@ async def test_triage_disabled_setting_bypasses_gate(sessionmaker_fixture):
         services=_services(),
         patcher=patcher,
         github=None,
-        slack=None,
+        notifier=None,
         triage=triage,
     )
 
@@ -635,7 +635,7 @@ async def test_triage_failure_falls_through_to_pipeline(sessionmaker_fixture):
         services=_services(),
         patcher=patcher,
         github=None,
-        slack=None,
+        notifier=None,
         triage=triage,
     )
 
@@ -674,7 +674,7 @@ async def test_investigation_runs_after_collection_and_records_output(sessionmak
         services=_services(),
         patcher=patcher,
         github=None,
-        slack=None,
+        notifier=None,
         triage=None,
         investigator=investigator,
     )
@@ -735,7 +735,7 @@ async def test_synthesis_records_narrowed_context_flag(sessionmaker_fixture):
         services=_services(),
         patcher=patcher,
         github=None,
-        slack=None,
+        notifier=None,
         investigator=investigator,
     )
 
@@ -767,7 +767,7 @@ async def test_investigation_failure_leaves_no_investigation_for_synthesis(sessi
         services=_services(),
         patcher=patcher,
         github=None,
-        slack=None,
+        notifier=None,
         investigator=investigator,
     )
 
@@ -805,7 +805,7 @@ async def test_investigation_receives_triage_reasoning(sessionmaker_fixture):
         services=_services(),
         patcher=patcher,
         github=None,
-        slack=None,
+        notifier=None,
         triage=triage,
         investigator=investigator,
     )
@@ -836,7 +836,7 @@ async def test_investigation_failure_falls_through_to_synthesis(sessionmaker_fix
         services=_services(),
         patcher=patcher,
         github=None,
-        slack=None,
+        notifier=None,
         investigator=investigator,
     )
 
@@ -870,7 +870,7 @@ async def test_investigation_disabled_setting_skips_stage(sessionmaker_fixture):
         services=_services(),
         patcher=patcher,
         github=None,
-        slack=None,
+        notifier=None,
         investigator=investigator,
     )
 
@@ -900,7 +900,7 @@ async def test_failure_in_patch_generation_marks_failed(sessionmaker_fixture):
         services=_services(),
         patcher=patcher,
         github=None,
-        slack=None,
+        notifier=None,
     )
 
     async with sm() as s:

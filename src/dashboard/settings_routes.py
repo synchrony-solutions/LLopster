@@ -42,7 +42,7 @@ router = APIRouter()
 # Default integration status when the agent can't be reached. We render
 # the page as if everything is unknown rather than blanking the cards.
 _AGENT_DOWN_STATUS = {
-    "slack": {"configured": False, "masked": "", "agent_down": True},
+    "notifier": {"configured": False, "masked": "", "provider": "", "agent_down": True},
     "github": {"configured": False, "token_kind": "", "agent_down": True},
     "anthropic": {
         "configured": False, "model": "", "provider": "", "region": "",
@@ -160,10 +160,10 @@ async def _settings_context(request: Request) -> dict:
     license_status = await _fetch_license_status(request)
 
     integrations = await _fetch_integration_status(request)
-    slack = integrations.get("slack", {})
+    notifier = integrations.get("notifier", {})
     github = integrations.get("github", {})
     anthropic = integrations.get("anthropic", {})
-    agent_down = any(v.get("agent_down") for v in (slack, github, anthropic))
+    agent_down = any(v.get("agent_down") for v in (notifier, github, anthropic))
 
     return {
         "active": "settings",
@@ -183,8 +183,9 @@ async def _settings_context(request: Request) -> dict:
         "processing_mode": processing_mode,
         "mode_autopilot": AUTOPILOT,
         "mode_manual": MANUAL,
-        "slack_masked": slack.get("masked", "") or "—",
-        "slack_configured": bool(slack.get("configured")),
+        "notifier_masked": notifier.get("masked", "") or "—",
+        "notifier_configured": bool(notifier.get("configured")),
+        "notifier_provider": notifier.get("provider", ""),
         "github_repo": "configured" if github.get("configured") else "—",
         "github_configured": bool(github.get("configured")),
         "github_token_kind": github.get("token_kind", ""),
@@ -324,9 +325,9 @@ def _render_result(ok: bool, detail: str) -> HTMLResponse:
     return HTMLResponse(f'<span class="test-result {cls}">{prefix}{detail}</span>')
 
 
-@router.post("/settings/test/slack", response_class=HTMLResponse, name="settings_test_slack")
-async def settings_test_slack(request: Request) -> HTMLResponse:
-    ok, detail = await _proxy_test(request, "/api/integrations/test/slack")
+@router.post("/settings/test/notifier", response_class=HTMLResponse, name="settings_test_notifier")
+async def settings_test_notifier(request: Request) -> HTMLResponse:
+    ok, detail = await _proxy_test(request, "/api/integrations/test/notifier")
     return _render_result(ok, detail)
 
 

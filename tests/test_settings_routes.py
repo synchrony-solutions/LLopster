@@ -454,7 +454,7 @@ def _mock_agent_json(payload: dict, *, status_code: int = 200) -> MagicMock:
     return resp
 
 
-async def test_settings_test_slack_success(app_with_db):
+async def test_settings_test_notifier_success(app_with_db):
     """Agent reports ok=true → dashboard renders the green ✓ fragment."""
     fake_cfg = replace(_sr.config, agent_url="http://agent:8000")
     app, _ = app_with_db
@@ -464,29 +464,29 @@ async def test_settings_test_slack_success(app_with_db):
 
     with patch.object(_sr, "config", fake_cfg):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
-            r = await c.post("/settings/test/slack")
+            r = await c.post("/settings/test/notifier")
     assert r.status_code == 200
     assert "Connected" in r.text
     assert "test-ok" in r.text
     # Verify the dashboard actually called the agent, not Slack directly.
     called_url = app.state.http.post.await_args.args[0]
-    assert called_url == "http://agent:8000/api/integrations/test/slack"
+    assert called_url == "http://agent:8000/api/integrations/test/notifier"
 
 
-async def test_settings_test_slack_agent_url_missing(app_with_db):
+async def test_settings_test_notifier_agent_url_missing(app_with_db):
     """No AGENT_URL on dashboard → render error rather than crash."""
     fake_cfg = replace(_sr.config, agent_url="")
     app, _ = app_with_db
 
     with patch.object(_sr, "config", fake_cfg):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
-            r = await c.post("/settings/test/slack")
+            r = await c.post("/settings/test/notifier")
     assert r.status_code == 200
     assert "AGENT_URL not set" in r.text
     assert "test-err" in r.text
 
 
-async def test_settings_test_slack_agent_reports_not_configured(app_with_db):
+async def test_settings_test_notifier_agent_reports_not_configured(app_with_db):
     """Agent owns the secret check now — dashboard surfaces its message."""
     fake_cfg = replace(_sr.config, agent_url="http://agent:8000")
     app, _ = app_with_db
@@ -496,7 +496,7 @@ async def test_settings_test_slack_agent_reports_not_configured(app_with_db):
 
     with patch.object(_sr, "config", fake_cfg):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
-            r = await c.post("/settings/test/slack")
+            r = await c.post("/settings/test/notifier")
     assert r.status_code == 200
     assert "not set" in r.text
     assert "test-err" in r.text
@@ -544,7 +544,7 @@ async def test_settings_test_agent_unreachable(app_with_db):
 
     with patch.object(_sr, "config", fake_cfg):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
-            r = await c.post("/settings/test/slack")
+            r = await c.post("/settings/test/notifier")
     assert r.status_code == 200
     assert "agent unreachable" in r.text
     assert "test-err" in r.text

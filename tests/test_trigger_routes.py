@@ -76,7 +76,7 @@ async def app_with_db():
     app.state.collector = None
     app.state.patcher = None
     app.state.github = None
-    app.state.slack = None
+    app.state.notifier = None
     app.state.background_tasks = set()
     yield app, sm
     await engine.dispose()

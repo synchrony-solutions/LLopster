@@ -208,13 +208,16 @@ async def record_pr(
     await session.commit()
 
 
-async def record_slack(
+async def record_notification(
     session: AsyncSession,
     run_id: str,
     *,
     notified: bool,
     skip_reason: str | None = None,
 ) -> None:
+    # Stored on the slack_* columns for every provider (Slack/Teams) — the
+    # column names predate multi-provider support; renaming them would be a
+    # migration for no functional gain.
     run = await session.get(Run, run_id)
     if run is None:
         return
