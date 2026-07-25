@@ -525,6 +525,17 @@ LLopster is the agent. The cluster it runs in is modeled by a small constellatio
 
 Locally these are checked out as siblings: `~/dev/LLopster`, `~/dev/testbed-infra`, `~/dev/demo-app`, `~/dev/order-service`.
 
+## Contributing
+
+Contributions are welcome — see **[CONTRIBUTING.md](CONTRIBUTING.md)** for the dev setup, coding conventions, and the DCO sign-off requirement. Because the agent holds real credentials and writes to real repos, `main` is protected and every change lands through review:
+
+- **No direct pushes to `main`.** All changes go through a pull request off a branch; history is kept linear (no merge commits, no force-pushes).
+- **CI must pass.** The `pytest` suite is a required status check and blocks the merge until green (and your branch must be up to date with `main`).
+- **A code-owner review is required.** At least one approving review from the relevant [CODEOWNERS](.github/CODEOWNERS) is mandatory; pushing new commits dismisses stale approvals, and review threads must be resolved before merge.
+- **Security issues don't go through public PRs** — follow [SECURITY.md](SECURITY.md) instead.
+
+Releases are cut by tagging `v*`, which is restricted to the release team.
+
 ## License
 
 LLopster is **source-available** under the **[Functional Source License v1.1 (FSL-1.1-ALv2)](LICENSE.md)** — the same license Sentry created for exactly this kind of product. In plain English:
