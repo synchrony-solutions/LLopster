@@ -44,7 +44,10 @@ router = APIRouter()
 _AGENT_DOWN_STATUS = {
     "slack": {"configured": False, "masked": "", "agent_down": True},
     "github": {"configured": False, "token_kind": "", "agent_down": True},
-    "anthropic": {"configured": False, "model": "", "agent_down": True},
+    "anthropic": {
+        "configured": False, "model": "", "provider": "", "region": "",
+        "agent_down": True,
+    },
 }
 
 # Shown on the license card when the agent (source of truth for the license)
@@ -187,6 +190,8 @@ async def _settings_context(request: Request) -> dict:
         "github_token_kind": github.get("token_kind", ""),
         "anthropic_model": anthropic.get("model", ""),
         "anthropic_configured": bool(anthropic.get("configured")),
+        "anthropic_provider": anthropic.get("provider", ""),
+        "anthropic_region": anthropic.get("region", ""),
         "agent_url": (getattr(config, "agent_url", "") or "").rstrip("/"),
         "agent_down": agent_down,
         "license": license_status,

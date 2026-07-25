@@ -162,9 +162,15 @@ class Triage:
         api_key: str,
         model: str,
         *,
+        client: AsyncAnthropic | None = None,
         prompt_resolver: PromptResolver | None = None,
     ):
-        self.client = AsyncAnthropic(api_key=api_key)
+        # ``client`` lets main.py inject a provider-built client (Anthropic
+        # API or Bedrock). When None we build the direct-API client from
+        # ``api_key`` — the historical default that keeps the unit tests
+        # (which pass a dummy key and then monkeypatch ``.messages.create``)
+        # working unchanged.
+        self.client = client if client is not None else AsyncAnthropic(api_key=api_key)
         self.model = model
         # Optional pack-aware prompt seam. None → use the baked-in
         # Community SYSTEM_PROMPT (existing behavior, used by unit tests).

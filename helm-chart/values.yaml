@@ -376,6 +376,40 @@ agent:
   # warning). The supported production path is to set LLOPSTER_API_TOKEN.
   allowUnauthenticated: false
 
+  # LLM provider. Selects how the agent reaches Claude.
+  #   provider: anthropic  → the direct Anthropic API, keyed by
+  #                          agent.secrets.ANTHROPIC_API_KEY (the default).
+  #   provider: bedrock    → Claude via AWS Bedrock. No Anthropic key needed;
+  #                          credentials come from the pod's ServiceAccount
+  #                          IRSA role (set agent.serviceAccount.annotations
+  #                          — recommended) or the optional static AWS keys
+  #                          under agent.secrets.
+  # The one image supports both; nothing else changes when you flip this.
+  llm:
+    provider: anthropic
+    bedrock:
+      # REQUIRED when provider=bedrock (the chart fails to render without it).
+      region: ""
+      # Bedrock inference-profile model IDs. These differ from the direct-API
+      # names (agent.env.ANTHROPIC_MODEL etc.) — override to match the models
+      # enabled in your account/region. The `us.` prefix is the US
+      # cross-region inference profile; use `eu.` / `apac.` as appropriate.
+      model: us.anthropic.claude-opus-4-7-v1:0
+      triageModel: us.anthropic.claude-haiku-4-5-v1:0
+      investigationModel: us.anthropic.claude-sonnet-4-6-v1:0
+
+  # ServiceAccount for the agent pod. The recommended way to grant Bedrock
+  # access on EKS is IRSA / pod-identity: create the SA here and annotate it
+  # with the IAM role ARN that allows `bedrock:InvokeModel` — no static keys
+  # ever touch the cluster. Harmless (no annotations) for the Anthropic API
+  # provider. Set create=false + name to reuse an externally-managed SA.
+  serviceAccount:
+    create: true
+    # Defaults to "llopster-agent" when empty.
+    name: ""
+    annotations: {}
+    #   eks.amazonaws.com/role-arn: arn:aws:iam::<account-id>:role/<bedrock-role>
+
   # Optional NetworkPolicy restricting who can reach the agent's webhook/API
   # port (8000) to in-cluster sources. Opt-in: it only takes effect on a CNI
   # that enforces NetworkPolicy, and a too-strict policy would drop AlertManager
@@ -500,6 +534,15 @@ agent:
     # Community install. A key pasted in the dashboard (Settings → License)
     # overrides this at runtime without a redeploy. See src/agent/license.py.
     LLOPSTER_LICENSE_KEY: ""
+    # OPTIONAL static AWS credentials — only a fallback for Bedrock on
+    # clusters WITHOUT IRSA / pod-identity. Leave empty (the default) to use
+    # the recommended keyless path: annotate agent.serviceAccount with an IAM
+    # role ARN instead. When AWS_ACCESS_KEY_ID is set, AWS_SECRET_ACCESS_KEY
+    # is required too; AWS_SESSION_TOKEN is only needed for temporary creds.
+    # These are ignored entirely when agent.llm.provider != bedrock.
+    AWS_ACCESS_KEY_ID: ""
+    AWS_SECRET_ACCESS_KEY: ""
+    AWS_SESSION_TOKEN: ""
 
   # Per-service registry. Each key matches the `service` label on an alert;
   # `github_repo` is the repo LLopster opens PRs against; `codebase_path` is

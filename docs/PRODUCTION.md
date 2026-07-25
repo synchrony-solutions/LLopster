@@ -8,7 +8,7 @@ This is the production path. **`docker compose` (the [README quickstart](../READ
 - [Helm 3](https://helm.sh/docs/intro/install/)
 - Your cluster's **existing Prometheus + Loki** query APIs reachable from the cluster (BYO mode — see [Install modes](#install-modes) below). LLopster does not need to be the thing that scrapes your apps; it only queries.
 - The **Prometheus Operator** (e.g. kube-prometheus-stack), *only if* you plan to set `alertRules.enabled=true` to install LLopster's curated `PrometheusRule` starter pack as a CRD
-- An [Anthropic API key](https://console.anthropic.com/); optionally a GitHub token (PR creation) and a Slack incoming webhook (notifications)
+- Claude access — either an [Anthropic API key](https://console.anthropic.com/), or **AWS Bedrock** (`agent.llm.provider=bedrock`; see [AWS Bedrock provider](#aws-bedrock-provider)); optionally a GitHub token (PR creation) and a Slack incoming webhook (notifications)
 
 `./scripts/bootstrap-helm.sh` only fetches the chart's optional subchart tarballs (Helm needs declared dependencies present on disk to render, even when you're not installing them) — it does not provision a cluster, install `kubectl`/Helm, or stand up Prometheus/Loki for you.
 
@@ -70,6 +70,31 @@ helm install llopster helm-chart/ \
 [helm-chart/docs/integration-recipes/](../helm-chart/docs/integration-recipes/) is the BYO contract — what LLopster needs from your stack, the Loki label-matching rules, and copy-paste snippets for the AlertManager receiver and raw-Prometheus rule annotations. Read it before going BYO; most "zero log lines" or "alert never reaches LLopster" issues trace back to a label or receiver mismatch covered there.
 
 The webhook itself should be authenticated in production — see [Securing the inbound surfaces](../README.md#securing-the-inbound-surfaces) in the README for the shared-secret setup and the exact AlertManager receiver config to send the bearer token. The chart is **secure-by-default**: it refuses to render when the agent or dashboard is exposed (an Ingress is enabled, or its Service is `LoadBalancer`/`NodePort`) without `agent.secrets.LLOPSTER_API_TOKEN` set — override for a trusted/local-only deploy with `--set agent.allowUnauthenticated=true`.
+
+## AWS Bedrock provider
+
+If your org consumes Claude through **AWS Bedrock** instead of the direct Anthropic API, set `agent.llm.provider=bedrock`. The same image and chart serve both providers — nothing else in the pipeline changes, and no Anthropic API key is needed.
+
+```bash
+helm install llopster oci://ghcr.io/synchrony-solutions/charts/llopster \
+  --version 0.2.0 \
+  --namespace llopster --create-namespace \
+  --set prometheus.bundled=false --set prometheus.url=http://<prom>.<ns>.svc:9090 \
+  --set loki.bundled=false --set loki.url=http://<loki>.<ns>.svc:3100 \
+  --set agent.llm.provider=bedrock \
+  --set agent.llm.bedrock.region=us-east-1 \
+  --set 'agent.serviceAccount.annotations.eks\.amazonaws\.com/role-arn=arn:aws:iam::<account-id>:role/<bedrock-role>' \
+  --set agent.secrets.GITHUB_TOKEN=ghp_... \
+  --set agent.secrets.SLACK_WEBHOOK_URL=https://hooks.slack.com/...
+```
+
+**Region and models.** `agent.llm.bedrock.region` is **required** — the chart fails to render without it when `provider=bedrock`. The model IDs are Bedrock *inference-profile* IDs (`agent.llm.bedrock.model` / `.triageModel` / `.investigationModel`, defaulting to the `us.anthropic.claude-*-v1:0` cross-region profiles); override them to match what's enabled in your account and region (`eu.` / `apac.` prefixes for other geographies). The 1-hour prompt-cache TTL beta is Anthropic-API-only and is forced off automatically on Bedrock.
+
+**Credentials — IRSA (recommended).** The chart creates a ServiceAccount for the agent pod (`agent.serviceAccount.create=true`, default). Grant Bedrock access by annotating it with the IAM role ARN that allows `bedrock:InvokeModel` — via `agent.serviceAccount.annotations` as shown above. No static keys are stored in the cluster. To reuse an externally-managed ServiceAccount instead, set `agent.serviceAccount.create=false` and `agent.serviceAccount.name=<existing-sa>`.
+
+**Credentials — static keys (fallback).** For clusters without IRSA / pod-identity, set `agent.secrets.AWS_ACCESS_KEY_ID` + `agent.secrets.AWS_SECRET_ACCESS_KEY` (and `agent.secrets.AWS_SESSION_TOKEN` for temporary credentials). These land in the `llopster-agent` Secret and are wired to the agent only when present; leave them empty to use the IRSA path above.
+
+The dashboard's Settings → connection card reflects the active provider, region, and model so you can confirm what's in use post-install.
 
 ## Monitoring LLopster itself
 

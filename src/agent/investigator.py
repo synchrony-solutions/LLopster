@@ -313,13 +313,23 @@ class Investigator:
         model: str,
         extended_cache_ttl: bool = True,
         *,
+        client: AsyncAnthropic | None = None,
         prompt_resolver: PromptResolver | None = None,
     ):
-        default_headers = (
-            {"anthropic-beta": "extended-cache-ttl-2025-04-11"}
-            if extended_cache_ttl else {}
-        )
-        self.client = AsyncAnthropic(api_key=api_key, default_headers=default_headers)
+        # ``client`` lets main.py inject a provider-built client (Anthropic
+        # API or Bedrock). When None we build the direct-API client from
+        # ``api_key`` — the historical default that keeps the unit tests
+        # working unchanged. Note ``extended_cache_ttl`` still governs the
+        # ``"ttl": "1h"`` cache marker below; main.py forces it False for
+        # Bedrock (which doesn't support the extended-TTL beta).
+        if client is not None:
+            self.client = client
+        else:
+            default_headers = (
+                {"anthropic-beta": "extended-cache-ttl-2025-04-11"}
+                if extended_cache_ttl else {}
+            )
+            self.client = AsyncAnthropic(api_key=api_key, default_headers=default_headers)
         self.model = model
         self.extended_cache_ttl = extended_cache_ttl
         # Optional pack-aware prompt seam. None → baked-in Community

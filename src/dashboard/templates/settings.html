@@ -323,11 +323,16 @@
 
         <div class="connection-row">
             <div class="connection-info">
-                <div class="conn-name">Anthropic</div>
+                <div class="conn-name">
+                    Claude{% if anthropic_provider == "bedrock" %} · AWS Bedrock{% elif anthropic_provider %} · Anthropic API{% endif %}
+                </div>
                 <div class="conn-detail">Model: <code>{{ anthropic_model }}</code></div>
+                {% if anthropic_provider == "bedrock" %}
+                <div class="conn-detail">Region: <code>{{ anthropic_region or "(from AWS credential chain)" }}</code></div>
+                {% endif %}
             </div>
-            <span class="test-result {% if anthropic_model %}test-ok{% else %}test-err{% endif %}">
-                {% if anthropic_model %}✓ Configured{% else %}Not configured{% endif %}
+            <span class="test-result {% if anthropic_configured %}test-ok{% else %}test-err{% endif %}">
+                {% if anthropic_configured %}✓ Configured{% else %}Not configured{% endif %}
             </span>
         </div>
     </div>

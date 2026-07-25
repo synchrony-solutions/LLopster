@@ -19,6 +19,7 @@ from urllib.parse import urlparse
 
 from fastapi import APIRouter, Request
 
+from src.agent.llm_provider import resolve_models
 from src.config import config
 
 router = APIRouter(prefix="/api/integrations", tags=["integrations"])
@@ -70,8 +71,14 @@ async def integrations_status() -> dict:
             "token_kind": _classify_github_token(config.github_token),
         },
         "anthropic": {
-            "configured": bool(config.anthropic_api_key),
-            "model": config.anthropic_model,
+            # "configured" is provider-aware: the direct API needs a key,
+            # Bedrock resolves credentials at call time (IRSA / static keys)
+            # so it reports configured whenever selected. `model` shows the
+            # synthesis model actually in use for the active provider.
+            "configured": config.llm_configured,
+            "provider": config.llm_provider,
+            "model": resolve_models(config).synthesis,
+            "region": config.aws_region if config.llm_provider == "bedrock" else "",
         },
     }
 
