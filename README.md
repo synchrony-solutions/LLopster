@@ -10,7 +10,7 @@ An AI-augmented SRE agent: when a Prometheus alert fires, LLopster investigates 
 |---|---|
 | **What it needs** | Kubernetes, Prometheus, Loki, an Anthropic API key, GitHub (optional, for PRs), Slack (optional, for notifications) |
 | **Try it locally** | `docker compose up -d --build` — see [Quickstart](#quickstart-local-evaluation) below (~5 min, not production) |
-| **Run it for real** | The Helm chart in [helm-chart/](helm-chart/) — see [docs/PRODUCTION.md](docs/PRODUCTION.md) |
+| **Run it for real** | `helm install llopster oci://ghcr.io/synchrony-solutions/charts/llopster` — see [docs/PRODUCTION.md](docs/PRODUCTION.md) |
 | **License** | Source-available ([FSL-1.1-ALv2](#license)), free to self-host, paid tiers unlock at runtime |
 
 ## How it works
