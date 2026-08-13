@@ -277,22 +277,28 @@
     <div class="settings-tab-panel panel-connections">
         <div class="connection-row">
             <div class="connection-info">
-                <div class="conn-name">Slack</div>
+                <div class="conn-name">
+                    Notifications{% if notifier_provider == "teams" %} · Microsoft Teams{% elif notifier_provider == "slack" %} · Slack{% elif notifier_provider == "none" %} · Disabled{% endif %}
+                </div>
                 <div class="conn-detail">
-                    {% if slack_configured %}Webhook endpoint: <code>{{ slack_masked }}</code>{% else %}<em>SLACK_WEBHOOK_URL not configured</em>{% endif %}
+                    {% if notifier_provider == "none" %}<em>NOTIFIER_PROVIDER=none — notifications disabled</em>
+                    {% elif notifier_configured %}Webhook endpoint: <code>{{ notifier_masked }}</code>
+                    {% else %}<em>{{ notifier_provider | upper }} webhook URL not configured</em>{% endif %}
                 </div>
             </div>
-            {% if slack_configured %}
-            <div id="slack-test-result" class="test-result"></div>
-            <form method="post" action="{{ url_for('settings_test_slack') }}">
+            {% if notifier_configured %}
+            <div id="notifier-test-result" class="test-result"></div>
+            <form method="post" action="{{ url_for('settings_test_notifier') }}">
                 <button type="submit"
                         class="settings-btn test-btn"
-                        hx-post="{{ url_for('settings_test_slack') }}"
-                        hx-target="#slack-test-result"
+                        hx-post="{{ url_for('settings_test_notifier') }}"
+                        hx-target="#notifier-test-result"
                         hx-swap="innerHTML">
                     Test
                 </button>
             </form>
+            {% elif notifier_provider == "none" %}
+            <span class="test-result">Off</span>
             {% else %}
             <span class="test-result test-err">Not configured</span>
             {% endif %}

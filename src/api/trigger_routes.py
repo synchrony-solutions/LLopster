@@ -156,7 +156,7 @@ async def trigger_submit(
         services=state.services,
         patcher=state.patcher,
         github=state.github,
-        slack=state.slack,
+        notifier=state.notifier,
         triage=getattr(state, "triage", None),
         investigator=getattr(state, "investigator", None),
         # Operator-initiated: never blocked by the cost breaker so a tripped
@@ -224,7 +224,7 @@ async def trigger_dispatch(request: Request, run_id: str) -> Response:
             services=state.services,
             patcher=state.patcher,
             github=state.github,
-            slack=state.slack,
+            notifier=state.notifier,
             triage=getattr(state, "triage", None),
             investigator=getattr(state, "investigator", None),
             # Operator-initiated dispatch of a queued run — bypass the breaker

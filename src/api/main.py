@@ -56,8 +56,8 @@ from src.db import create_engine, get_sessionmaker, init_schema
 from src.db import repository as repo
 from src.integrations.github_client import GitHubClient
 from src.integrations.loki_client import LokiClient
+from src.integrations.notifier import build_notifier
 from src.integrations.prometheus_client import PrometheusClient
-from src.integrations.slack_client import SlackClient
 from src.services_registry import ServiceRegistry
 
 logging.basicConfig(
@@ -204,13 +204,10 @@ async def lifespan(app: FastAPI):
         if config.llm_configured
         else None
     )
-    app.state.slack = (
-        SlackClient(webhook_url=config.slack_webhook_url, client=app.state.http)
-        if config.slack_webhook_url
-        else None
-    )
-    if app.state.slack is None:
-        log.warning("SLACK_WEBHOOK_URL not set — Slack notifications disabled")
+    # Notification channel (Slack / Teams / none) — build the active provider's
+    # client, or None when disabled/unconfigured. build_notifier logs the
+    # specific reason (unset URL, provider=none, etc.).
+    app.state.notifier = build_notifier(config, app.state.http)
     app.state.github = (
         GitHubClient(token=config.github_token, client=app.state.http)
         if config.github_token
@@ -388,7 +385,7 @@ async def alertmanager_webhook(request: Request) -> dict[str, Any]:
                 services=state.services,
                 patcher=state.patcher,
                 github=state.github,
-                slack=state.slack,
+                notifier=state.notifier,
                 triage=getattr(state, "triage", None),
                 investigator=getattr(state, "investigator", None),
             )

@@ -20,6 +20,8 @@ from urllib.parse import urlparse
 from fastapi import APIRouter, Request
 
 from src.agent.llm_provider import resolve_models
+from src.integrations.notifier import active_webhook_url
+from src.integrations.teams_client import build_text_card, message_envelope
 from src.config import config
 
 router = APIRouter(prefix="/api/integrations", tags=["integrations"])
@@ -62,9 +64,13 @@ async def integrations_status() -> dict:
     oauth) so the operator can tell what they configured.
     """
     return {
-        "slack": {
-            "configured": bool(config.slack_webhook_url),
-            "masked": _mask_url(config.slack_webhook_url),
+        "notifier": {
+            # Provider-aware notification status. "provider" is slack|teams|none;
+            # "configured" reflects the active provider's webhook URL; "masked"
+            # collapses that URL to its host so no secret path leaks.
+            "provider": config.notifier_provider,
+            "configured": config.notifier_configured,
+            "masked": _mask_url(active_webhook_url(config)),
         },
         "github": {
             "configured": bool(config.github_token),
@@ -97,25 +103,31 @@ async def integrations_services(request: Request) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# POST /api/integrations/test/slack
+# POST /api/integrations/test/notifier
 # ---------------------------------------------------------------------------
 
-@router.post("/test/slack")
-async def integrations_test_slack(request: Request) -> dict:
-    """Posts a test message to the configured Slack webhook.
-
-    Returns ``{ok: bool, detail: str}``. The dashboard renders this into
-    its HTML fragment; CLI/monitoring callers consume the JSON directly.
+@router.post("/test/notifier")
+async def integrations_test_notifier(request: Request) -> dict:
+    """Posts a test message to the *active* notification provider (Slack or
+    Teams). Returns ``{ok: bool, detail: str}``. The dashboard renders this
+    into its HTML fragment; CLI/monitoring callers consume the JSON directly.
     """
-    if not config.slack_webhook_url:
-        return {"ok": False, "detail": "SLACK_WEBHOOK_URL not set"}
+    provider = config.notifier_provider
+    url = active_webhook_url(config)
+    if provider == "none":
+        return {"ok": False, "detail": "notifications disabled (NOTIFIER_PROVIDER=none)"}
+    if not url:
+        return {"ok": False, "detail": f"{provider} webhook URL not set"}
     try:
         http = request.app.state.http
-        resp = await http.post(
-            config.slack_webhook_url,
-            json={"text": "llopster connection test ✓"},
-        )
-        if resp.status_code == 200:
+        if provider == "teams":
+            # Teams Workflows expects the Adaptive Card message envelope.
+            payload = message_envelope(build_text_card("llopster connection test ✓"))
+        else:
+            payload = {"text": "llopster connection test ✓"}
+        resp = await http.post(url, json=payload)
+        # Slack returns 200; Teams Workflows returns 202 Accepted.
+        if resp.status_code in (200, 201, 202):
             return {"ok": True, "detail": "Connected"}
         return {"ok": False, "detail": f"HTTP {resp.status_code}"}
     except Exception as e:

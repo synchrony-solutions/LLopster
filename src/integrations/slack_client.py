@@ -1,39 +1,25 @@
 """Post patch proposals to a Slack incoming webhook using Block Kit."""
 
 import logging
-import re
 
 import httpx
 
 from src.agent.alert_handler import ParsedAlert
 from src.agent.patch_generator import PatchProposal
+from src.integrations.proposal_sections import (
+    extract_section as _extract_section,
+    is_empty_patch,
+    parse_patch as _parse_patch,
+    truncate as _truncate,
+)
 
 log = logging.getLogger("llopster.slack")
 
 _SEVERITY_EMOJI = {"critical": "🔴", "warning": "🟡", "info": "🔵"}
 _CONFIDENCE_EMOJI = {5: "🟢", 4: "🟢", 3: "🟡", 2: "🔴", 1: "🔴", 0: "🔴"}
-_BLOCK_TEXT_LIMIT = 2900  # Slack hard limit is 3000; leave headroom
 
-
-# ---------------------------------------------------------------------------
-# Proposal parsing
-# ---------------------------------------------------------------------------
-
-def _extract_section(text: str, heading: str) -> str:
-    """Pull the body of a ## Heading section out of the LLM response."""
-    m = re.search(rf"##\s+{re.escape(heading)}\s*\n(.*?)(?=\n##\s|\Z)", text, re.DOTALL)
-    return m.group(1).strip() if m else ""
-
-
-def _parse_patch(text: str) -> str:
-    """Return the raw diff lines, stripping ```diff … ``` fences if present."""
-    raw = _extract_section(text, "Proposed Patch")
-    fence = re.search(r"```(?:diff)?\s*\n?(.*?)```", raw, re.DOTALL)
-    return fence.group(1).strip() if fence else raw
-
-
-def _truncate(text: str, limit: int = _BLOCK_TEXT_LIMIT) -> str:
-    return text if len(text) <= limit else text[: limit - 3] + "…"
+# Identifies this client to the notifier seam / status surfaces.
+PROVIDER = "slack"
 
 
 # ---------------------------------------------------------------------------
@@ -99,8 +85,7 @@ def build_blocks(alert: ParsedAlert, proposal: PatchProposal, pr_url: str | None
             },
         })
 
-    no_patch = not patch or "(no changes)" in patch or "No code patch" in patch
-    if no_patch:
+    if is_empty_patch(patch):
         blocks.append({
             "type": "section",
             "text": {"type": "mrkdwn", "text": "_No patch needed for this alert._"},
@@ -155,6 +140,9 @@ def build_blocks(alert: ParsedAlert, proposal: PatchProposal, pr_url: str | None
 # ---------------------------------------------------------------------------
 
 class SlackClient:
+    #: Provider id used by the notifier seam + dashboard status surfaces.
+    provider = PROVIDER
+
     def __init__(self, webhook_url: str, client: httpx.AsyncClient):
         self.webhook_url = webhook_url
         self._client = client

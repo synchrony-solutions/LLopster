@@ -33,9 +33,9 @@ AUTH_EXEMPT: set[tuple[str, str]] = {
     # as deliberately reusable by CLI/monitoring; the dashboard pair just
     # proxies to them. The /webhook NetworkPolicy + their low blast radius
     # cover the residual (a fixed Slack test message / a read-only GET /user).
-    ("POST", "/api/integrations/test/slack"),
+    ("POST", "/api/integrations/test/notifier"),
     ("POST", "/api/integrations/test/github"),
-    ("POST", "/settings/test/slack"),
+    ("POST", "/settings/test/notifier"),
     ("POST", "/settings/test/github"),
 }
 

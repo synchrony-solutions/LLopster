@@ -43,7 +43,7 @@ from src.integrations.github_client import (
     _extract_diff,
     proposal_has_patch,
 )
-from src.integrations.slack_client import SlackClient
+from src.integrations.notifier import Notifier
 from src.services_registry import ServiceRegistry
 
 # Severities that bypass the Haiku triage gate entirely. Critical alerts
@@ -72,7 +72,7 @@ async def process_alert(
     services: ServiceRegistry,
     patcher: PatchGenerator | None,
     github: GitHubClient | None,
-    slack: SlackClient | None,
+    notifier: Notifier | None,
     triage: Triage | None = None,
     investigator: Investigator | None = None,
     lookback_minutes: int | None = None,
@@ -461,30 +461,31 @@ async def process_alert(
             async with sessionmaker() as session:
                 await repo.record_pr(session, run_id, skip_reason=pr_skip_reason)
 
-        # Slack
-        slack_skip_reason: str | None = None
-        slack_notified = False
-        if slack is None:
-            slack_skip_reason = "SLACK_WEBHOOK_URL not set"
+        # Notification (Slack / Teams / none). Stored on the same
+        # slack_notified / slack_skip_reason columns regardless of provider.
+        notify_skip_reason: str | None = None
+        notified = False
+        if notifier is None:
+            notify_skip_reason = "notifications disabled (no notifier configured)"
         else:
             try:
-                await slack.post_patch(alert, proposal, pr_url=pr_url)
-                slack_notified = True
+                await notifier.post_patch(alert, proposal, pr_url=pr_url)
+                notified = True
             except Exception as e:
-                log.exception("[%s] slack notification failed: %s", run_id, e)
-                slack_skip_reason = f"Slack post error: {e}"
+                log.exception("[%s] %s notification failed: %s", run_id, notifier.provider, e)
+                notify_skip_reason = f"{notifier.provider} post error: {e}"
         async with sessionmaker() as session:
-            await repo.record_slack(
-                session, run_id, notified=slack_notified, skip_reason=slack_skip_reason,
+            await repo.record_notification(
+                session, run_id, notified=notified, skip_reason=notify_skip_reason,
             )
 
         # ---- Done -------------------------------------------------------
         async with sessionmaker() as session:
             await repo.update_status(session, run_id, "done")
         log.info(
-            "[%s] complete: confidence=%d pr=%s slack=%s",
+            "[%s] complete: confidence=%d pr=%s notify=%s",
             run_id, proposal.confidence,
-            pr_url or "skipped", "yes" if slack_notified else "skipped",
+            pr_url or "skipped", "yes" if notified else "skipped",
         )
 
     except Exception as e:

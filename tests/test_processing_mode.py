@@ -65,7 +65,7 @@ async def webhook_app(db_sessionmaker):
     app.state.collector = MagicMock()
     app.state.patcher = MagicMock()
     app.state.github = MagicMock()
-    app.state.slack = MagicMock()
+    app.state.notifier = MagicMock()
     app.state.background_tasks = set()
     return app
 
@@ -85,7 +85,7 @@ async def trigger_app(db_sessionmaker):
     app.state.collector = MagicMock()
     app.state.patcher = MagicMock()
     app.state.github = MagicMock()
-    app.state.slack = MagicMock()
+    app.state.notifier = MagicMock()
     app.state.background_tasks = set()
     return app
 
