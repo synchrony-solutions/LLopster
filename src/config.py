@@ -36,8 +36,35 @@ class Config:
     # Per-service codebase + GitHub repo lookup. See config/services.yaml.
     services_config_path: str = os.getenv("SERVICES_CONFIG", "config/services.yaml")
 
+    # LLM provider selector. "anthropic" (default) = the direct Anthropic
+    # API keyed by ANTHROPIC_API_KEY. "bedrock" = Claude via AWS Bedrock
+    # (credentials via the standard boto3 chain — IRSA / pod-identity on
+    # EKS, or the static AWS_* keys below as a fallback). See
+    # src/agent/llm_provider.py. Unknown values fall back to "anthropic".
+    llm_provider: str = os.getenv("LLM_PROVIDER", "anthropic").strip().lower()
+
     anthropic_api_key: str = os.getenv("ANTHROPIC_API_KEY", "")
     anthropic_model: str = os.getenv("ANTHROPIC_MODEL", "claude-opus-4-7")
+
+    # ---- AWS Bedrock provider ------------------------------------------
+    # Used only when LLM_PROVIDER=bedrock. Region is required (Bedrock is
+    # regional); the static keys are an OPTIONAL fallback for clusters
+    # without IRSA / pod-identity — leave them empty to use the ambient
+    # boto3 credential chain (the recommended EKS path). Model IDs are the
+    # Bedrock inference-profile IDs, which differ from the bare direct-API
+    # names (e.g. `us.anthropic.claude-opus-4-7-v1:0`). An empty override
+    # falls back to the matching direct-API model string.
+    aws_region: str = os.getenv("AWS_REGION", os.getenv("AWS_DEFAULT_REGION", ""))
+    aws_access_key_id: str = os.getenv("AWS_ACCESS_KEY_ID", "")
+    aws_secret_access_key: str = os.getenv("AWS_SECRET_ACCESS_KEY", "")
+    aws_session_token: str = os.getenv("AWS_SESSION_TOKEN", "")
+    bedrock_model: str = os.getenv("BEDROCK_MODEL", "us.anthropic.claude-opus-4-7-v1:0")
+    bedrock_triage_model: str = os.getenv(
+        "BEDROCK_TRIAGE_MODEL", "us.anthropic.claude-haiku-4-5-v1:0"
+    )
+    bedrock_investigation_model: str = os.getenv(
+        "BEDROCK_INVESTIGATION_MODEL", "us.anthropic.claude-sonnet-4-6-v1:0"
+    )
 
     # Haiku triage gate — cheap pre-flight call that decides whether an
     # alert is worth running the full Opus pipeline. Runtime-overridable
@@ -142,6 +169,18 @@ class Config:
     # Community prompts when entitled — see src/agent/packs.py. Absent dir =
     # Community prompts only (the default for every Community deployment).
     packs_dir: str = os.getenv("LLOPSTER_PACKS_DIR", "/packs")
+
+    @property
+    def llm_configured(self) -> bool:
+        """Whether the active LLM provider has enough config to build a
+        client. For the direct Anthropic API that means an API key is set;
+        for Bedrock we always return True and let credentials resolve
+        (IRSA / static keys) at call time — a missing region only logs a
+        warning. Drives the patcher/triage/investigator wiring in main.py
+        and the dashboard's connection-status surfaces."""
+        if self.llm_provider == "bedrock":
+            return True
+        return bool(self.anthropic_api_key)
 
 
 config = Config()

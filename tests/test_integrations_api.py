@@ -116,6 +116,42 @@ async def test_status_shows_unconfigured_state():
     assert body["anthropic"]["configured"] is False
 
 
+async def test_status_anthropic_provider_default():
+    """Direct-API provider: status reports provider=anthropic and the
+    direct-API synthesis model, no region."""
+    fake_cfg = replace(
+        _ia.config, llm_provider="anthropic",
+        anthropic_api_key="sk-ant-abc", anthropic_model="claude-opus-4-7",
+    )
+    app = _build_app()
+    with patch.object(_ia, "config", fake_cfg):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            r = await c.get("/api/integrations/status")
+    a = r.json()["anthropic"]
+    assert a["provider"] == "anthropic"
+    assert a["model"] == "claude-opus-4-7"
+    assert a["region"] == ""
+
+
+async def test_status_bedrock_provider():
+    """Bedrock provider: configured without an API key, reports the Bedrock
+    synthesis model + region so the operator can see what's in use."""
+    fake_cfg = replace(
+        _ia.config, llm_provider="bedrock", anthropic_api_key="",
+        aws_region="us-east-1",
+        bedrock_model="us.anthropic.claude-opus-4-7-v1:0",
+    )
+    app = _build_app()
+    with patch.object(_ia, "config", fake_cfg):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            r = await c.get("/api/integrations/status")
+    a = r.json()["anthropic"]
+    assert a["configured"] is True
+    assert a["provider"] == "bedrock"
+    assert a["model"] == "us.anthropic.claude-opus-4-7-v1:0"
+    assert a["region"] == "us-east-1"
+
+
 # ---------------------------------------------------------------------------
 # POST /api/integrations/test/slack
 # ---------------------------------------------------------------------------

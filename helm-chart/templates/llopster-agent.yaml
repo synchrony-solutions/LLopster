@@ -43,7 +43,35 @@ stringData:
   GITHUB_REPO: {{ .Values.agent.secrets.GITHUB_REPO | quote }}
   LLOPSTER_LICENSE_KEY: {{ .Values.agent.secrets.LLOPSTER_LICENSE_KEY | default "" | quote }}
   LLOPSTER_API_TOKEN: {{ .Values.agent.secrets.LLOPSTER_API_TOKEN | default "" | quote }}
+  {{- /* Static AWS credentials — OPTIONAL Bedrock fallback for clusters
+     without IRSA / pod-identity. Only emitted when set, so the recommended
+     IRSA path (agent.serviceAccount.annotations) leaves no keys at rest. */ -}}
+  {{- if .Values.agent.secrets.AWS_ACCESS_KEY_ID }}
+  AWS_ACCESS_KEY_ID: {{ .Values.agent.secrets.AWS_ACCESS_KEY_ID | quote }}
+  AWS_SECRET_ACCESS_KEY: {{ required "agent.secrets.AWS_SECRET_ACCESS_KEY is required when AWS_ACCESS_KEY_ID is set" .Values.agent.secrets.AWS_SECRET_ACCESS_KEY | quote }}
+  {{- end }}
+  {{- if .Values.agent.secrets.AWS_SESSION_TOKEN }}
+  AWS_SESSION_TOKEN: {{ .Values.agent.secrets.AWS_SESSION_TOKEN | quote }}
+  {{- end }}
 ---
+{{- if .Values.agent.serviceAccount.create }}
+# ServiceAccount for the agent pod. Its primary job is to carry the IRSA /
+# pod-identity annotation that grants Bedrock (`bedrock:InvokeModel`) access
+# when agent.llm.provider=bedrock — the recommended keyless credential path
+# on EKS. Harmless for the direct Anthropic API provider (no annotations).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "llopster.agent.serviceAccountName" . }}
+  labels:
+    {{- include "k3s-deployment.labels" . | nindent 4 }}
+    app.kubernetes.io/component: agent
+  {{- with .Values.agent.serviceAccount.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+---
+{{- end }}
 # services.yaml — maps `service` label on alerts to a codebase path and
 # GitHub repo. Mirrors config/services.yaml. Edit the
 # `agent.servicesConfig` map in values.yaml to add more services.
@@ -84,6 +112,7 @@ spec:
         checksum/services: {{ .Values.agent.servicesConfig | toYaml | sha256sum }}
         checksum/secrets: {{ .Values.agent.secrets | toYaml | sha256sum }}
     spec:
+      serviceAccountName: {{ include "llopster.agent.serviceAccountName" . }}
       {{- with .Values.agent.podSecurityContext }}
       securityContext:
         {{- toYaml . | nindent 8 }}
@@ -171,6 +200,42 @@ spec:
             - name: ANTHROPIC_API_KEY
               valueFrom:
                 secretKeyRef: { name: llopster-agent, key: ANTHROPIC_API_KEY }
+            # LLM provider selector. "anthropic" (default) uses the direct
+            # API + ANTHROPIC_API_KEY above; "bedrock" routes Claude through
+            # AWS Bedrock. See agent.llm in values.yaml.
+            - name: LLM_PROVIDER
+              value: {{ .Values.agent.llm.provider | default "anthropic" | quote }}
+            {{- if eq (.Values.agent.llm.provider | default "anthropic") "bedrock" }}
+            # --- Bedrock provider config ---
+            # Region is required (Bedrock is regional). Credentials resolve
+            # via the pod's ServiceAccount IRSA role (recommended) or the
+            # optional static AWS_* keys below.
+            - name: AWS_REGION
+              value: {{ required "agent.llm.bedrock.region is required when agent.llm.provider=bedrock" .Values.agent.llm.bedrock.region | quote }}
+            # Bedrock inference-profile model IDs (differ from the direct-API
+            # names). Override to match what's enabled in your account/region.
+            - name: BEDROCK_MODEL
+              value: {{ .Values.agent.llm.bedrock.model | quote }}
+            - name: BEDROCK_TRIAGE_MODEL
+              value: {{ .Values.agent.llm.bedrock.triageModel | quote }}
+            - name: BEDROCK_INVESTIGATION_MODEL
+              value: {{ .Values.agent.llm.bedrock.investigationModel | quote }}
+            {{- if .Values.agent.secrets.AWS_ACCESS_KEY_ID }}
+            # Static-key fallback (non-IRSA clusters). Absent → the boto3
+            # credential chain (IRSA / instance profile) is used instead.
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef: { name: llopster-agent, key: AWS_ACCESS_KEY_ID }
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef: { name: llopster-agent, key: AWS_SECRET_ACCESS_KEY }
+            {{- end }}
+            {{- if .Values.agent.secrets.AWS_SESSION_TOKEN }}
+            - name: AWS_SESSION_TOKEN
+              valueFrom:
+                secretKeyRef: { name: llopster-agent, key: AWS_SESSION_TOKEN }
+            {{- end }}
+            {{- end }}
             - name: SLACK_WEBHOOK_URL
               valueFrom:
                 secretKeyRef: { name: llopster-agent, key: SLACK_WEBHOOK_URL }

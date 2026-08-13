@@ -4,7 +4,13 @@ python-dotenv==1.0.1
 python-multipart==0.0.12
 alembic>=1.14.0
 httpx==0.27.2
-anthropic==0.69.0
+# [bedrock] pulls boto3/botocore for the AWS Bedrock provider
+# (LLM_PROVIDER=bedrock). One image serves every provider/tier, so the AWS
+# deps are always installed; the direct Anthropic API path doesn't import
+# them. boto3/botocore are pinned explicitly below for reproducible builds.
+anthropic[bedrock]==0.69.0
+boto3==1.43.56
+botocore==1.43.56
 PyJWT==2.9.0
 cryptography==43.0.1
 pyyaml==6.0.2

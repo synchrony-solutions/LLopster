@@ -32,6 +32,11 @@ from src.agent.dedup import compute_dedup_key, find_open_run_by_dedup_key
 from src.agent.packs import load_packs_into
 from src.agent.patch_generator import SYSTEM_PROMPT as SYNTHESIS_PROMPT, PatchGenerator
 from src.agent.investigator import SYSTEM_PROMPT as INVESTIGATION_PROMPT, Investigator
+from src.agent.llm_provider import (
+    build_message_client,
+    effective_extended_cache_ttl,
+    resolve_models,
+)
 from src.agent import license
 from src.agent.processing_mode import MANUAL, get_processing_mode
 from src.agent.processor import process_alert
@@ -139,43 +144,64 @@ async def lifespan(app: FastAPI):
     load_packs_into(prompt_resolver, config.packs_dir)
     app.state.prompt_resolver = prompt_resolver
 
+    # Provider seam (Anthropic API vs AWS Bedrock). One decision point:
+    # resolve the per-stage model IDs and whether the extended (1h) cache
+    # TTL applies (Bedrock forces it off), then build a provider-specific
+    # client per client kind. Triage never used the cache beta header;
+    # investigator + patch share the extended-TTL decision. All three are
+    # gated on `llm_configured` (API key present, or provider=bedrock).
+    models = resolve_models(config)
+    extended_ttl = effective_extended_cache_ttl(config)
+    log.info(
+        "LLM provider=%s models=(triage=%s, investigation=%s, synthesis=%s) "
+        "extended_cache_ttl=%s",
+        config.llm_provider, models.triage, models.investigation,
+        models.synthesis, extended_ttl,
+    )
+
     app.state.patcher = (
         PatchGenerator(
             api_key=config.anthropic_api_key,
-            model=config.anthropic_model,
-            extended_cache_ttl=config.extended_cache_ttl,
+            model=models.synthesis,
+            extended_cache_ttl=extended_ttl,
+            client=build_message_client(config, extended_cache_ttl=extended_ttl),
             prompt_resolver=prompt_resolver,
         )
-        if config.anthropic_api_key
+        if config.llm_configured
         else None
     )
     if app.state.patcher is None:
-        log.warning("ANTHROPIC_API_KEY not set — patch generation disabled")
-    # Triage shares the Anthropic API key with the patch generator —
-    # there's no separate Haiku key. If the key is unset the gate is
+        log.warning(
+            "LLM provider not configured (provider=%s) — patch generation disabled",
+            config.llm_provider,
+        )
+    # Triage shares the provider with the patch generator — there's no
+    # separate Haiku key. If the provider is unconfigured the gate is
     # disabled entirely; the processor then falls through to the existing
-    # pipeline (which is a no-op since patcher is also None).
+    # pipeline (which is a no-op since patcher is also None). Triage never
+    # sends the cache beta header, so its client is built with it off.
     app.state.triage = (
         Triage(
             api_key=config.anthropic_api_key,
-            model=config.anthropic_triage_model,
+            model=models.triage,
+            client=build_message_client(config, extended_cache_ttl=False),
             prompt_resolver=prompt_resolver,
         )
-        if config.anthropic_api_key
+        if config.llm_configured
         else None
     )
-    # Investigator shares the API key + the same extended-cache-ttl
-    # beta header decision as the patch generator (the outline blob is
-    # the cache prefix here, same shape as the codebase blob is for
-    # Opus today).
+    # Investigator shares the provider + the same extended-cache-ttl
+    # decision as the patch generator (the outline blob is the cache prefix
+    # here, same shape as the codebase blob is for Opus today).
     app.state.investigator = (
         Investigator(
             api_key=config.anthropic_api_key,
-            model=config.anthropic_investigation_model,
-            extended_cache_ttl=config.extended_cache_ttl,
+            model=models.investigation,
+            extended_cache_ttl=extended_ttl,
+            client=build_message_client(config, extended_cache_ttl=extended_ttl),
             prompt_resolver=prompt_resolver,
         )
-        if config.anthropic_api_key
+        if config.llm_configured
         else None
     )
     app.state.slack = (

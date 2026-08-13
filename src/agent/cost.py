@@ -67,10 +67,23 @@ DEFAULT_PRICING = PRICING["claude-opus-4-7"]
 
 def pricing_for(model: str | None) -> ModelPricing:
     """Best-effort lookup. Unknown / None falls back to Opus (the most
-    expensive option) so we never silently under-report spend."""
+    expensive option) so we never silently under-report spend.
+
+    Handles Bedrock model IDs, which wrap the canonical name in an
+    inference-profile shape (e.g. ``us.anthropic.claude-opus-4-7-v1:0``):
+    after an exact match fails we scan for a canonical key as a substring
+    so Bedrock spend is priced correctly instead of defaulting to Opus."""
     if not model:
         return DEFAULT_PRICING
-    return PRICING.get(model.strip().lower(), DEFAULT_PRICING)
+    key = model.strip().lower()
+    exact = PRICING.get(key)
+    if exact is not None:
+        return exact
+    # Bedrock / inference-profile IDs embed the canonical name — match on it.
+    for canonical, pricing in PRICING.items():
+        if canonical in key:
+            return pricing
+    return DEFAULT_PRICING
 
 
 def compute_cost_usd(

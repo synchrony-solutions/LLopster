@@ -8,7 +8,7 @@ An AI-augmented SRE agent: when a Prometheus alert fires, LLopster investigates 
 
 | | |
 |---|---|
-| **What it needs** | Kubernetes, Prometheus, Loki, an Anthropic API key, GitHub (optional, for PRs), Slack (optional, for notifications) |
+| **What it needs** | Kubernetes, Prometheus, Loki, Claude access (an Anthropic API key **or** AWS Bedrock), GitHub (optional, for PRs), Slack (optional, for notifications) |
 | **Try it locally** | `docker compose up -d --build` — see [Quickstart](#quickstart-local-evaluation) below (~5 min, not production) |
 | **Run it for real** | `helm install llopster oci://ghcr.io/synchrony-solutions/charts/llopster` — see [docs/PRODUCTION.md](docs/PRODUCTION.md) |
 | **License** | Source-available ([FSL-1.1-ALv2](#license)), free to self-host, paid tiers unlock at runtime |
@@ -70,6 +70,8 @@ Edit `.env`:
 
 ```env
 ANTHROPIC_API_KEY=sk-ant-...
+# Consuming Claude through AWS Bedrock instead? Set LLM_PROVIDER=bedrock and
+# skip the key above — see "Using AWS Bedrock" below.
 
 # Standard Anthropic accounts must set this false — the 1-hour prompt-cache TTL
 # is a beta and every Sonnet/Opus call 400s without it. Defaults to true.
@@ -414,9 +416,13 @@ Caveats:
 
 | Variable | Description | Default |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | Anthropic API key | required |
-| `ANTHROPIC_MODEL` | Model ID | `claude-opus-4-7` |
-| `EXTENDED_CACHE_TTL` | Use the 1-hour prompt-cache TTL beta (`extended-cache-ttl-2025-04-11`). Set to `false` if your account doesn't have the beta. | `true` |
+| `LLM_PROVIDER` | How the agent reaches Claude: `anthropic` (direct API) or `bedrock` (AWS Bedrock). See [Using AWS Bedrock](#using-aws-bedrock). | `anthropic` |
+| `ANTHROPIC_API_KEY` | Anthropic API key. Required for `LLM_PROVIDER=anthropic`; unused for `bedrock`. | required (anthropic) |
+| `ANTHROPIC_MODEL` | Model ID (direct API) | `claude-opus-4-7` |
+| `AWS_REGION` | Bedrock region. Required when `LLM_PROVIDER=bedrock`. | — |
+| `BEDROCK_MODEL` / `BEDROCK_TRIAGE_MODEL` / `BEDROCK_INVESTIGATION_MODEL` | Bedrock inference-profile model IDs (used when `LLM_PROVIDER=bedrock`; they differ from the direct-API names). | `us.anthropic.claude-{opus-4-7,haiku-4-5,sonnet-4-6}-v1:0` |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` | Optional static AWS creds for Bedrock on clusters without IRSA / pod-identity. Leave unset to use the ambient boto3 credential chain (recommended). | optional |
+| `EXTENDED_CACHE_TTL` | Use the 1-hour prompt-cache TTL beta (`extended-cache-ttl-2025-04-11`). Set to `false` if your account doesn't have the beta. Forced off automatically for Bedrock. | `true` |
 | `SLACK_WEBHOOK_URL` | Slack incoming webhook | optional (disables Slack if unset) |
 | `GITHUB_TOKEN` | GitHub PAT with `repo` scope on every service repo | optional (disables PR creation if unset) |
 | `LLOPSTER_API_TOKEN` | Shared secret guarding the inbound write surfaces (`/webhook`, trigger, settings/license). **Empty = auth disabled** (loud startup warning). See [Securing the inbound surfaces](#securing-the-inbound-surfaces). Runtime-overridable via the `api_auth_token` setting (Settings → API access). | optional (auth disabled if unset) |
@@ -434,6 +440,27 @@ Caveats:
 | `RUN_RETENTION_DAYS` | Background pruner deletes runs older than this many days. `0` disables pruning. Runtime-overridable via `run_retention_days` setting. | `90` |
 | `RUN_PRUNE_INTERVAL_SECONDS` | How often the pruner wakes up | `3600` |
 | `DATABASE_URL` | SQLAlchemy async URL for run history | `sqlite+aiosqlite:///./data/llopster.db` (local), `sqlite+aiosqlite:////app/data/llopster.db` (compose), PostgreSQL (Helm) |
+
+## Using AWS Bedrock
+
+If your org consumes Claude through **AWS Bedrock** rather than the direct Anthropic API, set `LLM_PROVIDER=bedrock`. The same single image serves both providers — you flip one env var (Helm value), and the triage → investigation → synthesis pipeline is otherwise identical. No Anthropic API key is required in Bedrock mode.
+
+Two things differ from the direct API:
+
+- **Model IDs.** Bedrock addresses models by *inference-profile ID* (e.g. `us.anthropic.claude-opus-4-7-v1:0`), not the bare `claude-opus-4-7` name. Set `BEDROCK_MODEL` / `BEDROCK_TRIAGE_MODEL` / `BEDROCK_INVESTIGATION_MODEL` to the profiles enabled in your account/region (defaults use the `us.` cross-region profiles). The `AWS_REGION` is required.
+- **Prompt-cache TTL.** The 1-hour `extended-cache-ttl` beta is Anthropic-API-only; it's automatically forced off for Bedrock (5-minute ephemeral prompt caching still applies).
+
+**Credentials.** Bedrock uses the standard AWS credential chain. On EKS the recommended path is **IRSA / pod-identity** — no static keys stored in the cluster. In the Helm chart, annotate the agent's ServiceAccount with the IAM role ARN that grants `bedrock:InvokeModel`:
+
+```bash
+helm install llopster oci://ghcr.io/synchrony-solutions/charts/llopster \
+  --set agent.llm.provider=bedrock \
+  --set agent.llm.bedrock.region=us-east-1 \
+  --set 'agent.serviceAccount.annotations.eks\.amazonaws\.com/role-arn=arn:aws:iam::<account-id>:role/<bedrock-role>' \
+  # ...your other values
+```
+
+For clusters without IRSA, static keys are an optional fallback — set `agent.secrets.AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` (and `AWS_SESSION_TOKEN` for temporary creds). See [docs/PRODUCTION.md](docs/PRODUCTION.md#aws-bedrock-provider) for the full walkthrough.
 
 ## Securing the inbound surfaces
 
@@ -510,7 +537,7 @@ LLopster ships **one image and one Helm chart for every tier** — Community, Bu
 .venv/bin/python -m pytest tests/
 ```
 
-<!--TEST_COUNT-->471<!--/TEST_COUNT--> tests, all passing. Tests use `httpx.MockTransport` for HTTP clients, `unittest.mock.AsyncMock` for the Anthropic client, and `sqlite+aiosqlite:///:memory:` for the database — no live API calls and no on-disk DB run in the suite. HTML route tests render the templates against an in-memory DB and assert on key substrings + the presence/absence of the HTMX poll trigger. Background-task tests (pruner, pr_poller) run with sub-second intervals so the loop is exercised in <0.5s.
+<!--TEST_COUNT-->498<!--/TEST_COUNT--> tests, all passing. Tests use `httpx.MockTransport` for HTTP clients, `unittest.mock.AsyncMock` for the Anthropic client, and `sqlite+aiosqlite:///:memory:` for the database — no live API calls and no on-disk DB run in the suite. HTML route tests render the templates against an in-memory DB and assert on key substrings + the presence/absence of the HTMX poll trigger. Background-task tests (pruner, pr_poller) run with sub-second intervals so the loop is exercised in <0.5s.
 
 ## Related repositories
 
