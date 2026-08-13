@@ -10,8 +10,48 @@ description: |
   prometheus.bundled=false and loki.bundled=false and point LLopster at
   your existing observability via prometheus.url / loki.url.
 type: application
-version: 0.2.0
-appVersion: "0.2.0"
+version: 1.0.0
+appVersion: "1.0.0"
+
+# API floor, derived from what templates/ actually renders: apps/v1,
+# networking.k8s.io/v1 Ingress (stable in 1.19), and core v1. The
+# monitoring.coreos.com/v1 ServiceMonitor is opt-in and CRD-gated, so it does
+# not move this floor. Helm refuses to install below this.
+kubeVersion: ">=1.19.0-0"
+
+keywords:
+  - sre
+  - observability
+  - prometheus
+  - loki
+  - alertmanager
+  - incident-response
+  - llm
+  - ai
+
+home: https://github.com/synchrony-solutions/LLopster
+# `sources` is what Helm maps to the OCI annotation
+# org.opencontainers.image.source when pushing to a registry. Without it the
+# published chart package does NOT link back to this repository on ghcr, which
+# means it does not inherit the repo's visibility and has to be flipped to
+# public by hand. Keep this pointing at the repo.
+sources:
+  - https://github.com/synchrony-solutions/LLopster
+# Org avatar — stands in until a dedicated logo asset exists. Swap for a
+# stable, versioned URL (e.g. a raw.githubusercontent.com path to a committed
+# SVG) when there is one.
+icon: https://avatars.githubusercontent.com/u/219000890?v=4
+
+# Required by `validate-maintainers` in ct.yaml. Mirrors the
+# @synchrony-solutions/llopster-maintainers team that CODEOWNERS routes
+# reviews to — keep the two in sync.
+maintainers:
+  - name: braswent
+    url: https://github.com/braswent
+  - name: fenimors
+    url: https://github.com/fenimors
+  - name: jocobtt
+    url: https://github.com/jocobtt
 
 dependencies:
   # Bundled observability. Toggled by prometheus.bundled / loki.bundled in

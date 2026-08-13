@@ -8,9 +8,11 @@ chart-dirs:
 chart-repos:
   - prometheus-community=https://prometheus-community.github.io/helm-charts
   - grafana=https://grafana.github.io/helm-charts
-# We don't (yet) declare maintainers in Chart.yaml, and the chart version is
-# tied to appVersion rather than bumped per-PR, so disable those two gates.
-# Re-enable validate-maintainers once a maintainers: block is added.
-validate-maintainers: false
+# Chart.yaml now declares maintainers, so that gate is on: ct verifies each
+# listed maintainer resolves to a real GitHub account, which keeps the block
+# from silently rotting as the team changes.
+validate-maintainers: true
+# Still off: the chart version is tied to appVersion and bumped at release
+# time, not on every PR that touches helm-chart/.
 check-version-increment: false
 helm-extra-args: --timeout 600s
