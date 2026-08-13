@@ -7,8 +7,20 @@ name: Release
 # published:
 #   1. tag creation is restricted to the llopster-release team by the
 #      "release-tags" repository ruleset, and
-#   2. the `release` environment requires a reviewer approval (with
-#      self-review prevented) before the job starts.
+#   2. the `release` environment requires approval from the llopster-release
+#      team before the job starts, with self-review prevented — so whoever
+#      pushed the tag cannot approve their own release.
+#
+# Caveat, deliberate: the environment keeps `can_admins_bypass: true`, so a
+# repository admin CAN bypass gate 2 and publish alone. The gate is binding for
+# non-admins. If you want it binding for everyone, set can_admins_bypass=false:
+#   echo '{"can_admins_bypass": false}' | gh api -X PUT \
+#     repos/synchrony-solutions/LLopster/environments/release --input -
+# (that PUT resets omitted fields, so re-send reviewers/branch policy with it).
+#
+# The environment also carries a `v*` tag deployment-branch-policy. Custom
+# policies are enabled, which means an empty policy list would block every
+# deployment — don't delete that policy without replacing it.
 #
 # The pushed tag must equal "v" + the chart version in helm-chart/Chart.yaml;
 # the guard step fails the run on mismatch so a mistagged release publishes
