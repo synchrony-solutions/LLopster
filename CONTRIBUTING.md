@@ -27,7 +27,7 @@ first so you don't invest in a direction we'd ask you to rework.
 
 ## Development setup
 
-LLopster targets **Python 3.12**. The app itself runs in Docker, but the test
+LLopster targets **Python 3.14**. The app itself runs in Docker, but the test
 suite runs locally against a virtualenv.
 
 ```bash

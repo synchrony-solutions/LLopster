@@ -28,7 +28,7 @@ no repo clone or `helm repo add` needed:
 # BYO observability (production): point at your existing Prometheus + Loki and
 # wire your existing AlertManager to LLopster's webhook (integration-recipes).
 helm install llopster oci://ghcr.io/synchrony-solutions/charts/llopster \
-  --version 1.0.0 \
+  --version 1.1.0 \
   --namespace llopster --create-namespace \
   --set prometheus.bundled=false \
   --set prometheus.url=http://<your-prometheus>.<ns>.svc:9090 \
@@ -77,7 +77,7 @@ If your org consumes Claude through **AWS Bedrock** instead of the direct Anthro
 
 ```bash
 helm install llopster oci://ghcr.io/synchrony-solutions/charts/llopster \
-  --version 1.0.0 \
+  --version 1.1.0 \
   --namespace llopster --create-namespace \
   --set prometheus.bundled=false --set prometheus.url=http://<prom>.<ns>.svc:9090 \
   --set loki.bundled=false --set loki.url=http://<loki>.<ns>.svc:3100 \
@@ -107,7 +107,7 @@ LLopster posts each patch proposal (root cause, diff, confidence, PR button) to 
 ```bash
 # Microsoft Teams notifications
 helm upgrade --install llopster oci://ghcr.io/synchrony-solutions/charts/llopster \
-  --version 1.0.0 --namespace llopster --create-namespace \
+  --version 1.1.0 --namespace llopster --create-namespace \
   # ...prometheus/loki/anthropic values... \
   --set agent.notifications.provider=teams \
   --set agent.secrets.TEAMS_WEBHOOK_URL='https://prod-1.westus.logic.azure.com/workflows/...'

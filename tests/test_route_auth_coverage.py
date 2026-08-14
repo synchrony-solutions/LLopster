@@ -22,6 +22,18 @@ from src.api.auth import require_inbound_auth
 from src.api.main import app as agent_app
 from src.dashboard.main import app as dashboard_app
 
+# FastAPI >=0.140 no longer flattens `include_router()` routes into
+# `app.routes`; it inserts an `_IncludedRouter` wrapper whose
+# `effective_candidates()` yields the resolved routes, and only *those* carry
+# the dependencies passed to `include_router(..., dependencies=[...])` (the
+# wrapped `original_route.dependant` does not). Older FastAPI has no such
+# class, so the import is optional and enumeration falls back to plain
+# `APIRoute`s.
+try:  # pragma: no cover - depends on the installed FastAPI version
+    from fastapi.routing import _IncludedRouter
+except ImportError:  # pragma: no cover
+    _IncludedRouter = ()  # type: ignore[assignment]
+
 _WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 
 # (method, path) pairs that are intentionally unauthenticated. Keep this small
@@ -40,7 +52,7 @@ AUTH_EXEMPT: set[tuple[str, str]] = {
 }
 
 
-def _has_inbound_auth(route: APIRoute) -> bool:
+def _has_inbound_auth(route) -> bool:
     """True if ``require_inbound_auth`` is anywhere in the route's dependant tree."""
 
     def walk(dependant) -> bool:
@@ -54,15 +66,49 @@ def _has_inbound_auth(route: APIRoute) -> bool:
     return walk(route.dependant)
 
 
-def _write_routes(app):
+def _api_routes(app):
+    """Every route on ``app``, descending into included routers.
+
+    Yields objects exposing ``.path``, ``.methods`` and ``.dependant`` — either
+    a plain ``APIRoute`` declared on the app itself, or the effective
+    (dependency-merged) route context of an included router.
+    """
     for route in app.routes:
-        if not isinstance(route, APIRoute):
-            continue
-        methods = route.methods & _WRITE_METHODS
+        if isinstance(route, APIRoute):
+            yield route
+        elif _IncludedRouter and isinstance(route, _IncludedRouter):
+            for candidate in route.effective_candidates():
+                if candidate.methods:
+                    yield candidate
+
+
+def _write_routes(app):
+    for route in _api_routes(app):
+        methods = set(route.methods) & _WRITE_METHODS
         if not methods:
             continue
         for method in sorted(methods):
             yield method, route
+
+
+def test_route_enumeration_finds_routes():
+    """Non-vacuity guard for the tests below.
+
+    Route discovery walks FastAPI internals that have already changed shape once
+    (``include_router`` stopped flattening into ``app.routes``). When that
+    happens the enumeration silently returns nothing and every coverage
+    assertion below passes for the wrong reason. Anchor it to known routes so a
+    future internals change fails loudly here instead.
+    """
+    for app, expected in (
+        (agent_app, ("POST", "/webhook")),
+        (dashboard_app, ("POST", "/settings")),
+    ):
+        found = {(m, r.path) for m, r in _write_routes(app)}
+        assert expected in found, (
+            f"route enumeration did not find {expected} — FastAPI's routing "
+            f"internals likely changed shape again. Found: {sorted(found)}"
+        )
 
 
 def test_every_state_changing_route_is_guarded_or_explicitly_exempt():
@@ -95,9 +141,7 @@ def test_dashboard_read_surface_is_guarded():
         ("GET", "/api/runs/{run_id}"),
     }
     guarded: set[tuple[str, str]] = set()
-    for route in dashboard_app.routes:
-        if not isinstance(route, APIRoute):
-            continue
+    for route in _api_routes(dashboard_app):
         if not _has_inbound_auth(route):
             continue
         for method in route.methods:
