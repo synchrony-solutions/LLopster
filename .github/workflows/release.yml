@@ -7,8 +7,20 @@ name: Release
 # published:
 #   1. tag creation is restricted to the llopster-release team by the
 #      "release-tags" repository ruleset, and
-#   2. the `release` environment requires a reviewer approval (with
-#      self-review prevented) before the job starts.
+#   2. the `release` environment requires approval from the llopster-release
+#      team before the job starts, with self-review prevented — so whoever
+#      pushed the tag cannot approve their own release.
+#
+# Caveat, deliberate: the environment keeps `can_admins_bypass: true`, so a
+# repository admin CAN bypass gate 2 and publish alone. The gate is binding for
+# non-admins. If you want it binding for everyone, set can_admins_bypass=false:
+#   echo '{"can_admins_bypass": false}' | gh api -X PUT \
+#     repos/synchrony-solutions/LLopster/environments/release --input -
+# (that PUT resets omitted fields, so re-send reviewers/branch policy with it).
+#
+# The environment also carries a `v*` tag deployment-branch-policy. Custom
+# policies are enabled, which means an empty policy list would block every
+# deployment — don't delete that policy without replacing it.
 #
 # The pushed tag must equal "v" + the chart version in helm-chart/Chart.yaml;
 # the guard step fails the run on mismatch so a mistagged release publishes
@@ -49,14 +61,21 @@ jobs:
       - name: Log in to ghcr
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
-      - name: Build and push image
+      # QEMU + buildx are what make the arm64 half of the manifest possible;
+      # plain `docker build` on ubuntu-latest produces an amd64-only image that
+      # CrashLoops with "exec format error" on Graviton/arm64 node pools.
+      - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Build and push multi-arch image
         run: |
-          docker build \
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
             --tag "${IMAGE}:${{ steps.meta.outputs.app_version }}" \
             --tag "${IMAGE}:${GITHUB_SHA::7}" \
             --tag "${IMAGE}:latest" \
+            --push \
             .
-          docker push --all-tags "${IMAGE}"
 
       - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
         with:

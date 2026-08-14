@@ -1,5 +1,12 @@
 FROM python:3.12-slim
 
+# Links the published ghcr package back to this repository. Without this label
+# the image does NOT inherit the repo's visibility on ghcr and has to be
+# flipped to public by hand after the first publish.
+LABEL org.opencontainers.image.source="https://github.com/synchrony-solutions/LLopster" \
+      org.opencontainers.image.description="LLopster — AI-augmented SRE agent that turns Prometheus/Loki alerts into reviewed pull-request fixes." \
+      org.opencontainers.image.licenses="FSL-1.1-ALv2"
+
 WORKDIR /app
 
 # Unbuffered stdout/stderr so log lines reach `docker logs` in real time.

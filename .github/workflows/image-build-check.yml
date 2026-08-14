@@ -1,0 +1,83 @@
+name: Image build check
+
+# Rehearses the multi-arch image build from .github/workflows/release.yml
+# WITHOUT publishing anything.
+#
+# Why this exists: the release job only ever runs on a `v*` tag, so before this
+# workflow the first real exercise of the arm64 build was the tag itself. A
+# failure there burns the tag (the release-tags ruleset blocks re-pushing it, so
+# recovery means deleting and re-cutting). This job lets you prove the build
+# green first, on demand.
+#
+# This workflow deliberately CANNOT publish:
+#   - `permissions: contents: read` — no packages: write, so the token cannot
+#     push to ghcr even if a `--push` were added by mistake;
+#   - the build uses `--output type=cacheonly` instead of `--push`.
+# Keep both. If you ever need this to publish, that belongs in release.yml
+# behind the tag + environment gates, not here.
+
+on:
+  workflow_dispatch:
+  # Also run automatically when something that can break the image changes.
+  # Path-filtered on purpose: the arm64 half builds under QEMU emulation and is
+  # slow, so this should not run on every PR.
+  #
+  # NOTE: because this is path-filtered it will NOT report on PRs that don't
+  # touch these files — so it must never be added to the required status checks
+  # in the main-branch ruleset, or docs-only PRs become unmergeable. (Same trap
+  # documented in tests.yml, which is why that one has no path filter.)
+  pull_request:
+    paths:
+      - "Dockerfile"
+      - ".dockerignore"
+      - "requirements.txt"
+      - ".github/workflows/image-build-check.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: multi-arch build (no push)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      # Pinned to the same SHAs as release.yml — if you bump one, bump both, or
+      # this stops being a faithful rehearsal.
+      - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      # Mirrors the release build: same Dockerfile, same context, same
+      # platforms, and deliberately no build cache, so this reflects the cold
+      # build the tag will actually perform. `cacheonly` builds every layer for
+      # both architectures and discards the result — `--load` is not an option
+      # because it cannot handle a multi-platform manifest.
+      - name: Build for linux/amd64 and linux/arm64 (no push)
+        run: |
+          start=$SECONDS
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            --output type=cacheonly \
+            --metadata-file /tmp/build-metadata.json \
+            .
+          echo "duration_seconds=$((SECONDS - start))" >> "$GITHUB_ENV"
+
+      # The tag build runs this same work plus a registry push, so this number
+      # is the floor for how long the release job will take.
+      - name: Report build time
+        run: |
+          echo "### Multi-arch build passed :white_check_mark:" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Platforms: \`linux/amd64\`, \`linux/arm64\` (no push)" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Cold build took **${duration_seconds}s** — the release job does this plus a registry push." >> "$GITHUB_STEP_SUMMARY"
+          if [ -s /tmp/build-metadata.json ]; then
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "<details><summary>buildx metadata</summary>" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            cat /tmp/build-metadata.json >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            echo "</details>" >> "$GITHUB_STEP_SUMMARY"
+          fi
