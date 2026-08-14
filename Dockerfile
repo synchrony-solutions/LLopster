@@ -1,4 +1,4 @@
-FROM python:3.12-slim
+FROM python:3.14-slim
 
 # Links the published ghcr package back to this repository. Without this label
 # the image does NOT inherit the repo's visibility on ghcr and has to be

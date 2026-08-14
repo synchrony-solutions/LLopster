@@ -552,7 +552,7 @@ LLopster ships **one image and one Helm chart for every tier** — Community, Bu
 .venv/bin/python -m pytest tests/
 ```
 
-<!--TEST_COUNT-->526<!--/TEST_COUNT--> tests, all passing. Tests use `httpx.MockTransport` for HTTP clients, `unittest.mock.AsyncMock` for the Anthropic client, and `sqlite+aiosqlite:///:memory:` for the database — no live API calls and no on-disk DB run in the suite. HTML route tests render the templates against an in-memory DB and assert on key substrings + the presence/absence of the HTMX poll trigger. Background-task tests (pruner, pr_poller) run with sub-second intervals so the loop is exercised in <0.5s.
+<!--TEST_COUNT-->527<!--/TEST_COUNT--> tests, all passing. Tests use `httpx.MockTransport` for HTTP clients, `unittest.mock.AsyncMock` for the Anthropic client, and `sqlite+aiosqlite:///:memory:` for the database — no live API calls and no on-disk DB run in the suite. HTML route tests render the templates against an in-memory DB and assert on key substrings + the presence/absence of the HTMX poll trigger. Background-task tests (pruner, pr_poller) run with sub-second intervals so the loop is exercised in <0.5s.
 
 ## Related repositories
 
