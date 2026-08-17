@@ -57,7 +57,7 @@ TEAMS_WEBHOOK_URL=https://prod-1.westus.logic.azure.com/workflows/...
 
 ```bash
 helm upgrade --install llopster oci://ghcr.io/synchrony-solutions/charts/llopster \
-  --version 1.1.0 --namespace llopster --create-namespace \
+  --version 1.2.0 --namespace llopster --create-namespace \
   # ...your prometheus/loki/anthropic values... \
   --set agent.notifications.provider=teams \
   --set agent.secrets.TEAMS_WEBHOOK_URL='https://prod-1.westus.logic.azure.com/workflows/...'

@@ -210,7 +210,7 @@ agent:
 Install/upgrade (layer with your BYO-observability + auth values):
 
 ```bash
-helm upgrade --install llopster oci://ghcr.io/synchrony-solutions/charts/llopster --version 1.1.0 --namespace llopster --create-namespace -f values.bedrock.yaml -f values.byo.yaml
+helm upgrade --install llopster oci://ghcr.io/synchrony-solutions/charts/llopster --version 1.2.0 --namespace llopster --create-namespace -f values.bedrock.yaml -f values.byo.yaml
 ```
 
 Notes:

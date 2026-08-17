@@ -10,8 +10,8 @@ description: |
   prometheus.bundled=false and loki.bundled=false and point LLopster at
   your existing observability via prometheus.url / loki.url.
 type: application
-version: 1.1.0
-appVersion: "1.1.0"
+version: 1.2.0
+appVersion: "1.2.0"
 
 # API floor, derived from what templates/ actually renders: apps/v1,
 # networking.k8s.io/v1 Ingress (stable in 1.19), and core v1. The
