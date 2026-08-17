@@ -94,6 +94,17 @@ class Config:
 
     # GitHub token is global; per-service repo comes from services.yaml.
     github_token: str = os.getenv("GITHUB_TOKEN", "")
+
+    # GitHub REST API root. Defaults to the public github.com API, so an
+    # existing install sees no change. GitHub Enterprise Server exposes the
+    # same v3 REST API under a per-instance host — set this to
+    # ``https://<ghes-host>/api/v3`` to open PRs against an internal
+    # instance. The trailing slash is stripped so callers can always join
+    # with "/repos/...". If your GHES presents a certificate from a private
+    # CA, mount the CA bundle and point SSL_CERT_FILE at it (httpx honors
+    # SSL_CERT_FILE / SSL_CERT_DIR); the codebase-clone init container needs
+    # GIT_SSL_CAINFO for the same reason.
+    github_api_base: str = os.getenv("GITHUB_API_BASE", "https://api.github.com").rstrip("/")
     patch_confidence_threshold: int = int(os.getenv("PATCH_CONFIDENCE_THRESHOLD", "4"))
 
     # Open PRs as drafts by default (least-privilege, propose-only posture):

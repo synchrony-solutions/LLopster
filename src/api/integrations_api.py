@@ -15,6 +15,7 @@ The dashboard wraps these into HTML fragments locally.
 
 from __future__ import annotations
 
+import re
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Request
@@ -39,7 +40,16 @@ def _mask_url(url: str) -> str:
 
 def _classify_github_token(token: str) -> str:
     """Returns the token "kind" so the dashboard can show a hint without
-    ever seeing the value itself."""
+    ever seeing the value itself.
+
+    Display only — nothing gates on this value, and it must never be the
+    reason a token is rejected. GitHub Enterprise Server lets an admin
+    configure its own token prefixes, and older GHES PATs are bare 40-char
+    hex with no prefix at all, so "unknown" is a perfectly valid token on an
+    enterprise instance. The bare-hex case gets its own label rather than
+    landing in "unknown", to keep the Settings page from implying a
+    misconfiguration where there is none.
+    """
     if not token:
         return ""
     if token.startswith("github_pat_"):
@@ -48,6 +58,8 @@ def _classify_github_token(token: str) -> str:
         return "classic-pat"
     if token.startswith(("ghs_", "gho_", "ghu_")):
         return "oauth"
+    if re.fullmatch(r"[0-9a-f]{40}", token):
+        return "legacy-pat"
     return "unknown"
 
 
@@ -140,7 +152,10 @@ async def integrations_test_notifier(request: Request) -> dict:
 
 @router.post("/test/github")
 async def integrations_test_github(request: Request) -> dict:
-    """Calls ``GET https://api.github.com/user`` with the configured PAT.
+    """Calls ``GET {GITHUB_API_BASE}/user`` with the configured PAT.
+
+    The base defaults to ``https://api.github.com``; a GitHub Enterprise
+    Server install points it at ``https://<host>/api/v3``.
 
     Returns ``{ok: bool, detail: str, user?: str}``.
     """
@@ -149,7 +164,7 @@ async def integrations_test_github(request: Request) -> dict:
     try:
         http = request.app.state.http
         resp = await http.get(
-            "https://api.github.com/user",
+            f"{config.github_api_base}/user",
             headers={
                 "Authorization": f"Bearer {config.github_token}",
                 "Accept": "application/vnd.github+json",

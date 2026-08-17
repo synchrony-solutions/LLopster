@@ -65,6 +65,103 @@ helm install llopster helm-chart/ \
 
 > **Schema migrations are automatic.** Alembic runs on every agent startup via `init_schema` in [src/db/engine.py](../src/db/engine.py) with three-way detection: fresh DB → `create_all` + stamp head; legacy pre-alembic DB → upgrade head; alembic-managed DB → upgrade head. You don't need a separate migrate-job in your chart.
 
+## Enterprise deployment
+
+Four things differ on a locked-down cluster — GitHub Enterprise Server, externally-managed secrets, a private image registry, and a managed database. Each is independent; take only what applies.
+
+### Mirroring the chart into a private registry
+
+**You do not need to run `helm dependency build`, and you do not need to vendor the bundled Prometheus/Loki subcharts yourself.** The published OCI chart already contains them (~270KB total), so mirroring is a pull-and-push with no access to any public chart repository:
+
+```bash
+helm pull oci://ghcr.io/synchrony-solutions/charts/llopster --version 1.1.0
+helm push llopster-1.1.0.tgz oci://<account>.dkr.ecr.<region>.amazonaws.com/charts
+```
+
+The `./scripts/bootstrap-helm.sh` step above applies only to installing from a **git clone**, where the tarballs are gitignored and must be fetched. Installing from the packaged chart skips it entirely.
+
+Every image in the chart is parameterized and pinned — no `:latest` anywhere — so a cluster restricted to a private mirror overrides five repositories:
+
+```bash
+helm install llopster oci://<account>.dkr.ecr.<region>.amazonaws.com/charts/llopster \
+  --set agent.image.repository=<mirror>/llopster \
+  --set dashboard.image.repository=<mirror>/llopster \
+  --set agent.codebaseClone.image.repository=<mirror>/alpine-git \
+  --set postgresql.image.repository=<mirror>/postgres \
+  --set postgresql.initImage.repository=<mirror>/busybox
+  # ... plus imagePullSecret.enabled=true if your registry needs credentials
+  # (ECR on EKS usually authenticates via the node role instead)
+```
+
+### GitHub Enterprise Server
+
+GHES serves the same v3 REST API under a per-instance host, so this is a base-URL change:
+
+```yaml
+agent:
+  git:
+    host: ghes.example-corp.net     # drives clone auth; API base is derived
+                                    # as https://<host>/api/v3
+  codebases:
+    - name: payments-api
+      repo: platform/payments-api   # derived against git.host
+```
+
+Set `agent.git.apiBase` explicitly only if your instance serves the API somewhere other than `/api/v3`. Note that the clone init container does **not** require a `ghp_`/`github_pat_` token prefix — GHES prefixes are configurable per instance and older GHES PATs are bare 40-char hex, both of which are accepted.
+
+If your GHES presents a certificate from an internal CA, mount the bundle once and point both HTTP clients at it — `git` in the init container and `httpx` in the agent read different variables:
+
+```yaml
+agent:
+  extraVolumes:
+    - name: corp-ca
+      configMap: { name: corp-ca-bundle }
+  extraVolumeMounts:                 # mounted into BOTH containers
+    - name: corp-ca
+      mountPath: /etc/ssl/corp
+      readOnly: true
+  extraEnv:
+    - name: SSL_CERT_FILE            # agent (httpx)
+      value: /etc/ssl/corp/ca-bundle.crt
+  codebaseClone:
+    extraEnv:
+      - name: GIT_SSL_CAINFO         # init container (git)
+        value: /etc/ssl/corp/ca-bundle.crt
+```
+
+### Credentials from an external secret manager
+
+In a GitOps deployment the values file is committed, so credentials cannot live in it. Point the chart at a Secret you own — created by External Secrets Operator, Vault Agent, the Secrets Store CSI driver, or by hand — and it renders no Secret of its own:
+
+```yaml
+agent:
+  existingSecret: llopster-credentials
+```
+
+Expected keys, all optional (an absent key disables its feature with a startup warning, exactly as an unset env var does): `ANTHROPIC_API_KEY`, `SLACK_WEBHOOK_URL`, `TEAMS_WEBHOOK_URL`, `GITHUB_TOKEN`, `GITHUB_REPO`, `LLOPSTER_API_TOKEN`, `LLOPSTER_LICENSE_KEY`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`.
+
+Two things to know:
+
+- `existingSecret` also satisfies the secure-render gate, since the chart cannot see inside your Secret to verify `LLOPSTER_API_TOKEN` is present. **The agent still warns loudly at startup if the token is genuinely absent — check the logs after the first deploy**, because in this mode the render-time check can no longer catch it for you.
+- The pod's `checksum/secrets` annotation is computed from chart values, so it **cannot detect a rotation inside your Secret**. The agent keeps the old value until the pod restarts. Pair with a reloader (e.g. `secret.reloader.stakater.com/reload`) if you rotate in place.
+
+### External database (RDS / Cloud SQL)
+
+With `postgresql.enabled=false` the chart deploys no database and requires you to supply one. Point it at a Secret holding the full SQLAlchemy URL:
+
+```yaml
+postgresql:
+  enabled: false
+externalDatabase:
+  existingSecret: llopster-rds     # key: DATABASE_URL, override with secretKey
+```
+
+The URL is `postgresql+asyncpg://<user>:<password>@<host>:5432/<database>`. An External Secrets template can compose it from the same source fields the database credential already uses.
+
+The chart **refuses to render** if `postgresql.enabled=false` and no database is configured — the app's fallback is a SQLite file under `/app/data`, and that write fails against the chart's own `readOnlyRootFilesystem`, so the fallback could only ever produce a crash-loop. The check runs **per component**: the agent and dashboard are separate pods with separate connections, so an `agent.env.DATABASE_URL` passthrough alone is not enough to satisfy it.
+
+Passwords never reach a PodSpec on either path — `DATABASE_URL` is always injected by `secretKeyRef`, so it does not appear in `kubectl describe pod`, `helm get values`, or a rendered manifest stored by a GitOps controller.
+
 ## Wiring your existing AlertManager + Loki
 
 [helm-chart/docs/integration-recipes/](../helm-chart/docs/integration-recipes/) is the BYO contract — what LLopster needs from your stack, the Loki label-matching rules, and copy-paste snippets for the AlertManager receiver and raw-Prometheus rule annotations. Read it before going BYO; most "zero log lines" or "alert never reaches LLopster" issues trace back to a label or receiver mismatch covered there.

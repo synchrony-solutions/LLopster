@@ -11,6 +11,7 @@ import httpx
 from src.agent.alert_handler import ParsedAlert
 from src.agent.patch_generator import PatchProposal
 from src.agent.patch_validator import validate_patched_files
+from src.config import config
 
 log = logging.getLogger("llopster.github")
 
@@ -317,8 +318,16 @@ def proposal_has_patch(proposal_text: str) -> bool:
 
 
 class GitHubClient:
-    def __init__(self, token: str, client: httpx.AsyncClient):
+    def __init__(
+        self, token: str, client: httpx.AsyncClient, *, api_base: str | None = None
+    ):
         self._client = client
+        # REST API root. Defaults to the public github.com API (config's own
+        # default), so github.com installs are unchanged. GitHub Enterprise
+        # Server serves the identical v3 API under https://<host>/api/v3 —
+        # every request below is built from this root, so pointing it at a
+        # GHES instance is the whole of the change.
+        self._api_base = (api_base or config.github_api_base).rstrip("/")
         self._headers = {
             "Authorization": f"Bearer {token}",
             "Accept": "application/vnd.github+json",
@@ -326,7 +335,7 @@ class GitHubClient:
         }
 
     def _base(self, repo: str) -> str:
-        return f"https://api.github.com/repos/{repo}"
+        return f"{self._api_base}/repos/{repo}"
 
     async def open_pr(
         self, alert: ParsedAlert, proposal: PatchProposal, repo: str,
