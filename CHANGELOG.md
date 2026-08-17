@@ -9,6 +9,116 @@ Chart version and `appVersion` are released in lockstep: chart `X.Y.Z` always
 ships image tag `X.Y.Z`. The release workflow refuses to publish if the pushed
 `vX.Y.Z` tag and `helm-chart/Chart.yaml` disagree.
 
+## [1.2.0] - 2026-08-17
+
+Enterprise-deployment release. Closes the four gaps that stood between
+`helm install` and forking the chart on a locked-down cluster: source on
+**GitHub Enterprise Server**, credentials delivered by an **external secret
+manager**, images pulled only from a **private registry**, and a **managed
+database** instead of the bundled Postgres.
+
+Every default is unchanged — a github.com install with bundled Postgres
+upgrades with no values edits. See the new
+[Enterprise deployment](docs/PRODUCTION.md#enterprise-deployment) section.
+
+### Added
+
+- **GitHub Enterprise Server support.** `GITHUB_API_BASE` (default
+  `https://api.github.com`) now backs every GitHub REST call; in the chart it
+  is *derived* from a new `agent.git` block (`host`, `apiBase`) by the
+  `llopster.github.apiBase` helper — the same pattern as `PROMETHEUS_URL` — so
+  the API root can never drift from the host the clone init container rewrites
+  credentials for. Setting `agent.git.host` alone resolves the GHES convention
+  `https://<host>/api/v3`.
+- **`agent.existingSecret`** — point the chart at a Secret created by External
+  Secrets Operator, Vault Agent, or the Secrets Store CSI driver and it renders
+  no Secret of its own. Required for GitOps, where the values file is committed
+  and cannot hold credentials, and it avoids a Helm-vs-controller ownership
+  fight over the same Secret name. Mirrored by
+  `postgresql.auth.existingSecret`.
+- **`externalDatabase.existingSecret` / `.secretKey`** — a real external-database
+  path (RDS, Cloud SQL) for `postgresql.enabled=false`.
+- **Pod extensibility hooks**: `agent.extraEnv`, `agent.extraVolumes`, and
+  `agent.extraVolumeMounts` (mounted into the agent *and* the clone init
+  container), plus `agent.codebaseClone.extraEnv`. Together these mount a
+  corporate CA bundle for a GHES instance behind a private CA — `SSL_CERT_FILE`
+  for the agent's httpx client, `GIT_SSL_CAINFO` for git.
+- **`agent.codebases[].repo`** — an `org/name` shorthand resolved against
+  `agent.git.host`, so a GHES install names its host once instead of repeating
+  it in every entry. An explicit `gitRepo:` URL still wins, for a repo on a
+  different host.
+- **Configurable init-container images**: `agent.codebaseClone.image` and
+  `postgresql.initImage`, completing image parameterization across the chart.
+
+### Changed
+
+- **`DATABASE_URL` is now always injected by `secretKeyRef`, never as a literal.**
+  It was interpolated into the agent and dashboard PodSpecs, which exposed the
+  database password to `kubectl describe pod`, `helm get values`, and any
+  rendered manifest a GitOps controller stores. The chart composes it into the
+  Postgres Secret when it owns the database.
+- **The clone init container no longer gates auth on a token prefix.** It
+  required `ghp_`/`github_pat_`/`gho_`/`ghs_`/`ghu_`; GHES prefixes are
+  configurable per instance and older GHES PATs are bare 40-char hex, so a valid
+  enterprise token silently fell through to an anonymous clone and failed
+  against a private repo with a confusing error. Only an empty or `CHANGEME`
+  token now disables auth; the prefix check survives as a log hint.
+- **`alpine/git` is pinned to `v2.54.0`** (was `:latest`). Identical digest to
+  what `:latest` resolved to at release time, so nothing about the pulled image
+  changed — it is simply reproducible now, and survives a digest-pinning policy.
+- **The Postgres StatefulSet now honors `imagePullSecret`.** It was the only
+  workload in the chart without it, so a private-mirror cluster could not pull
+  its images.
+- **Postgres probes read `$POSTGRES_USER` / `$POSTGRES_DB` from the container
+  env** (via `sh -c`, since exec probes do not substitute) instead of templated
+  values, which are unavailable under `postgresql.auth.existingSecret`.
+- **The secure-render gate accepts `agent.existingSecret`.** It reads
+  `agent.secrets.LLOPSTER_API_TOKEN`, which is empty by design under an external
+  secret manager, so every exposed GitOps install would otherwise have refused
+  to render. The agent's runtime startup warning remains the check that can
+  actually see the value.
+- `_classify_github_token` labels bare 40-char hex as `legacy-pat` rather than
+  `unknown`, so the Settings page stops implying a misconfiguration on GHES.
+  Display only — nothing gates on it.
+
+### Fixed
+
+- **The documented external-database escape hatch now works.** `values.yaml` said
+  that with `postgresql.enabled=false` you must point `DATABASE_URL` at an
+  external DB, but both `DATABASE_URL` blocks were wrapped in
+  `{{- if .Values.postgresql.enabled }}`. The variable was never set, the app
+  fell back to SQLite under `/app/data`, and that write fails against the
+  chart's own `readOnlyRootFilesystem` — so the documented configuration could
+  only ever crash-loop. The chart now refuses to render instead, **per
+  component**: the agent and dashboard are separate pods with separate
+  connections, so an `agent.env.DATABASE_URL` passthrough alone does not
+  satisfy it.
+- **Static AWS credentials in an externally-managed Secret are no longer
+  dropped.** The `AWS_*` env vars were gated on `agent.secrets.AWS_ACCESS_KEY_ID`
+  being non-empty, which is never true under `agent.existingSecret` — the
+  variables were silently omitted with no error.
+
+### Notes for operators
+
+- **Upgrading from 1.1.0 needs no values changes.** `agent.git.host` defaults to
+  `github.com`, `existingSecret` fields default empty, and the bundled Postgres
+  path is unchanged apart from `DATABASE_URL` moving into the Secret the chart
+  already owned.
+- **If you run `postgresql.enabled=false` today, the chart will now refuse to
+  render** until you set `externalDatabase.existingSecret` (or a
+  `DATABASE_URL` env passthrough for *both* the agent and the dashboard). This
+  is deliberate: that configuration could not have been working — it fell back
+  to a SQLite write that the read-only root filesystem rejects.
+- Keys expected in an `agent.existingSecret` are all optional; an absent key
+  disables its feature with a startup warning, exactly as an unset env var does.
+  Because `checksum/secrets` is computed from chart values, it cannot detect a
+  rotation *inside* an externally-managed Secret — pair with a reloader if you
+  rotate in place.
+- Mirroring the chart into a private registry does **not** require
+  `helm dependency build`: the published OCI artifact already vendors the
+  optional observability subcharts (~270KB), so `helm pull` → `helm push` is
+  sufficient.
+
 ## [1.1.0] - 2026-08-14
 
 Dependency-maintenance release: clears the open Dependabot backlog (nine PRs —
@@ -116,4 +226,6 @@ License (FSL-1.1-ALv2); the Community tier self-hosts with no license key.
   service is its own repo, chart, release, and PR target — see
   [docs/PRODUCTION.md](docs/PRODUCTION.md).
 
+[1.2.0]: https://github.com/synchrony-solutions/LLopster/releases/tag/v1.2.0
+[1.1.0]: https://github.com/synchrony-solutions/LLopster/releases/tag/v1.1.0
 [1.0.0]: https://github.com/synchrony-solutions/LLopster/releases/tag/v1.0.0

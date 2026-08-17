@@ -28,7 +28,7 @@ no repo clone or `helm repo add` needed:
 # BYO observability (production): point at your existing Prometheus + Loki and
 # wire your existing AlertManager to LLopster's webhook (integration-recipes).
 helm install llopster oci://ghcr.io/synchrony-solutions/charts/llopster \
-  --version 1.1.0 \
+  --version 1.2.0 \
   --namespace llopster --create-namespace \
   --set prometheus.bundled=false \
   --set prometheus.url=http://<your-prometheus>.<ns>.svc:9090 \
@@ -74,8 +74,8 @@ Four things differ on a locked-down cluster — GitHub Enterprise Server, extern
 **You do not need to run `helm dependency build`, and you do not need to vendor the bundled Prometheus/Loki subcharts yourself.** The published OCI chart already contains them (~270KB total), so mirroring is a pull-and-push with no access to any public chart repository:
 
 ```bash
-helm pull oci://ghcr.io/synchrony-solutions/charts/llopster --version 1.1.0
-helm push llopster-1.1.0.tgz oci://<account>.dkr.ecr.<region>.amazonaws.com/charts
+helm pull oci://ghcr.io/synchrony-solutions/charts/llopster --version 1.2.0
+helm push llopster-1.2.0.tgz oci://<account>.dkr.ecr.<region>.amazonaws.com/charts
 ```
 
 The `./scripts/bootstrap-helm.sh` step above applies only to installing from a **git clone**, where the tarballs are gitignored and must be fetched. Installing from the packaged chart skips it entirely.
@@ -174,7 +174,7 @@ If your org consumes Claude through **AWS Bedrock** instead of the direct Anthro
 
 ```bash
 helm install llopster oci://ghcr.io/synchrony-solutions/charts/llopster \
-  --version 1.1.0 \
+  --version 1.2.0 \
   --namespace llopster --create-namespace \
   --set prometheus.bundled=false --set prometheus.url=http://<prom>.<ns>.svc:9090 \
   --set loki.bundled=false --set loki.url=http://<loki>.<ns>.svc:3100 \
@@ -204,7 +204,7 @@ LLopster posts each patch proposal (root cause, diff, confidence, PR button) to 
 ```bash
 # Microsoft Teams notifications
 helm upgrade --install llopster oci://ghcr.io/synchrony-solutions/charts/llopster \
-  --version 1.1.0 --namespace llopster --create-namespace \
+  --version 1.2.0 --namespace llopster --create-namespace \
   # ...prometheus/loki/anthropic values... \
   --set agent.notifications.provider=teams \
   --set agent.secrets.TEAMS_WEBHOOK_URL='https://prod-1.westus.logic.azure.com/workflows/...'
