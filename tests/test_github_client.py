@@ -639,3 +639,57 @@ async def test_open_pr_fails_closed_on_invalid_patched_python():
     mock_http.put.assert_not_called()
     post_urls = [c.args[0] for c in mock_http.post.call_args_list]
     assert post_urls == []
+
+
+# ---------------------------------------------------------------------------
+# GitHub Enterprise Server — API base URL
+# ---------------------------------------------------------------------------
+# GHES serves the identical v3 REST API under https://<host>/api/v3. Every
+# request the client makes is built from `_base()`, so pointing the base at a
+# GHES instance is the whole of the change. The default must stay
+# https://api.github.com so existing github.com installs are untouched.
+
+
+def test_base_defaults_to_public_github_api():
+    client = GitHubClient(token="gh-token", client=AsyncMock())
+    assert client._base("owner/repo") == "https://api.github.com/repos/owner/repo"
+
+
+def test_base_honors_ghes_api_base():
+    client = GitHubClient(
+        token="gh-token", client=AsyncMock(),
+        api_base="https://ghes.example.net/api/v3",
+    )
+    assert client._base("owner/repo") == "https://ghes.example.net/api/v3/repos/owner/repo"
+
+
+def test_base_strips_trailing_slash_from_api_base():
+    """An operator-supplied base with a trailing slash must not produce a
+    double slash — the GHES path is hand-configured, so tolerate the shape."""
+    client = GitHubClient(
+        token="gh-token", client=AsyncMock(),
+        api_base="https://ghes.example.net/api/v3/",
+    )
+    assert client._base("owner/repo") == "https://ghes.example.net/api/v3/repos/owner/repo"
+
+
+@pytest.mark.asyncio
+async def test_open_pr_targets_ghes_host_end_to_end():
+    """Every call in the open_pr flow — repo lookup, ref, contents, branch,
+    commit, PR — must land on the GHES host, not api.github.com."""
+    mock_http = _make_mock_http()
+    client = GitHubClient(
+        token="gh-token", client=mock_http,
+        api_base="https://ghes.example.net/api/v3",
+    )
+    await client.open_pr(_make_alert(), _make_proposal(), repo="owner/repo")
+
+    called = (
+        [c.args[0] for c in mock_http.get.call_args_list]
+        + [c.args[0] for c in mock_http.post.call_args_list]
+        + [c.args[0] for c in mock_http.put.call_args_list]
+    )
+    assert called, "expected the PR flow to issue HTTP calls"
+    for url in called:
+        assert url.startswith("https://ghes.example.net/api/v3/repos/owner/repo"), url
+        assert "api.github.com" not in url

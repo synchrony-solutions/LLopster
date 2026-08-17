@@ -10,6 +10,7 @@
 # Service name `llopster-postgres` is what the agent and dashboard
 # DATABASE_URL templates depend on — don't rename without updating those.
 # ---------------------------------------------------------------------------
+{{- if not (dig "auth" "existingSecret" "" .Values.postgresql) }}
 ---
 apiVersion: v1
 kind: Secret
@@ -23,6 +24,12 @@ stringData:
   POSTGRES_DB: {{ .Values.postgresql.auth.database | quote }}
   POSTGRES_USER: {{ .Values.postgresql.auth.username | quote }}
   POSTGRES_PASSWORD: {{ .Values.postgresql.auth.password | quote }}
+  # Composed here so the agent and dashboard can reference it instead of
+  # interpolating the password into their PodSpecs (where it would be visible
+  # to `kubectl describe pod`, `helm get values`, and any rendered manifest a
+  # GitOps controller stores). The chart owns this Secret, so it owns the URL.
+  DATABASE_URL: {{ printf "postgresql+asyncpg://%s:%s@llopster-postgres:5432/%s" .Values.postgresql.auth.username .Values.postgresql.auth.password .Values.postgresql.auth.database | quote }}
+{{- end }}
 ---
 apiVersion: v1
 kind: Service
@@ -62,6 +69,14 @@ spec:
         # Roll the pod when credentials change.
         checksum/credentials: {{ .Values.postgresql.auth | toYaml | sha256sum }}
     spec:
+      {{- /* Both postgres images (init + server) come from the same registry
+         as the rest of the release on a private-mirror cluster, so this
+         StatefulSet needs the pull secret too — it was the one workload in
+         the chart without it. */ -}}
+      {{- if .Values.imagePullSecret.enabled }}
+      imagePullSecrets:
+        - name: {{ .Values.imagePullSecret.name }}
+      {{- end }}
       # NFS-friendly init container: prepares the volume so postgres (uid 70)
       # can write to it.  fsGroup alone doesn't work on NFS because NFS
       # permissions are enforced server-side, so we either chown explicitly
@@ -69,7 +84,8 @@ spec:
       # under NFS root_squash).
       initContainers:
         - name: init-postgres-data
-          image: busybox:1.36
+          image: "{{ dig "initImage" "repository" "busybox" .Values.postgresql }}:{{ dig "initImage" "tag" "1.36" .Values.postgresql }}"
+          imagePullPolicy: {{ dig "initImage" "pullPolicy" "IfNotPresent" .Values.postgresql }}
           command:
             - sh
             - -c
@@ -104,7 +120,7 @@ spec:
               containerPort: 5432
           envFrom:
             - secretRef:
-                name: llopster-postgres-credentials
+                name: {{ include "llopster.postgres.secretName" . }}
           env:
             # PGDATA inside a subdirectory so the mount root (which often has
             # files like lost+found on managed PVs) doesn't confuse initdb.
@@ -113,25 +129,27 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /var/lib/postgresql/data
+          # Probes read the user/database from the container's own env rather
+          # than templating the values in. With postgresql.auth.existingSecret
+          # the chart cannot see those values — the external Secret supplies
+          # them — so a templated probe would check the wrong credentials and
+          # never go Ready. Wrapped in `sh -c` because exec probes do not
+          # perform env substitution on their own.
           readinessProbe:
             exec:
               command:
-                - pg_isready
-                - -U
-                - {{ .Values.postgresql.auth.username | quote }}
-                - -d
-                - {{ .Values.postgresql.auth.database | quote }}
+                - sh
+                - -c
+                - exec pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"
             initialDelaySeconds: 10
             periodSeconds: 5
             timeoutSeconds: 3
           livenessProbe:
             exec:
               command:
-                - pg_isready
-                - -U
-                - {{ .Values.postgresql.auth.username | quote }}
-                - -d
-                - {{ .Values.postgresql.auth.database | quote }}
+                - sh
+                - -c
+                - exec pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"
             initialDelaySeconds: 30
             periodSeconds: 10
             timeoutSeconds: 5

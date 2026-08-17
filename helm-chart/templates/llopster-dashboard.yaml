@@ -48,15 +48,12 @@ spec:
             - name: LLOPSTER_API_TOKEN
               valueFrom:
                 secretKeyRef:
-                  name: llopster-agent
+                  name: {{ include "llopster.agent.secretName" . }}
                   key: LLOPSTER_API_TOKEN
                   optional: true
-            # DATABASE_URL points at the same PostgreSQL as the agent.
-            # Built from the Bitnami postgresql subchart secret automatically.
-            {{- if .Values.postgresql.enabled }}
-            - name: DATABASE_URL
-              value: "postgresql+asyncpg://{{ .Values.postgresql.auth.username }}:{{ .Values.postgresql.auth.password }}@llopster-postgres:5432/{{ .Values.postgresql.auth.database }}"
-            {{- end }}
+            # DATABASE_URL points at the same database as the agent — by
+            # reference, so the password never lands in this PodSpec either.
+            {{- include "llopster.databaseUrlEnv" . | nindent 12 }}
             # NOTE: dashboard deliberately does NOT mount the agent's Slack /
             # GitHub / Anthropic secrets. Connection status and test buttons
             # call the agent's /api/integrations/* endpoints over in-cluster

@@ -328,8 +328,35 @@ alertRules:
   interval: 30s
 
 # ===========================================================================
+# External database — used when postgresql.enabled=false.
+#
+# The production path for a managed instance (RDS, Cloud SQL, Azure Database)
+# instead of running a second stateful Postgres in-cluster. Point this at a
+# Secret holding the full SQLAlchemy connection URL:
+#
+#   postgresql+asyncpg://<user>:<password>@<host>:5432/<database>
+#
+# Typically produced by External Secrets from AWS Secrets Manager, so the URL
+# — which contains a password — never enters a values file.
+#
+# With postgresql.enabled=false the chart REFUSES TO RENDER unless this or an
+# agent.env.DATABASE_URL passthrough is set. That is deliberate: the app's
+# fallback is a SQLite file under /app/data, and that write fails against the
+# chart's own readOnlyRootFilesystem — so the old silent fallback could only
+# ever produce a crash-loop.
+# ===========================================================================
+externalDatabase:
+  # Name of an existing Secret in the release namespace.
+  existingSecret: ""
+  # Key within that Secret holding the connection URL.
+  secretKey: DATABASE_URL
+
+# ===========================================================================
 # PostgreSQL — shared DB for agent and dashboard. Deployed via
 # templates/postgres.yaml (official postgres:17-alpine image).
+#
+# enabled: false → the chart deploys no database; configure externalDatabase
+#                  above (see the render-time guard described there).
 # ===========================================================================
 postgresql:
   enabled: true
@@ -342,9 +369,27 @@ postgresql:
     # CHANGEME — supply via values.secret.yaml at install time.
     password: CHANGEME-app-password
     database: llopster
+    # Externally-managed credentials for the bundled PostgreSQL. When set, the
+    # chart renders no postgres Secret and reads everything from yours, which
+    # must carry FOUR keys — the StatefulSet consumes the first three via
+    # envFrom, and the agent + dashboard read the fourth:
+    #   POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD, DATABASE_URL
+    # DATABASE_URL is the full SQLAlchemy URL, e.g.
+    #   postgresql+asyncpg://<user>:<password>@llopster-postgres:5432/<db>
+    # (An External Secrets template can compose it from the same source
+    # fields.) The username/password/database above are then ignored.
+    existingSecret: ""
   image:
     repository: postgres
     tag: "17-alpine"
+    pullPolicy: IfNotPresent
+  # Init container that prepares the data volume's ownership before postgres
+  # starts (see templates/postgres.yaml for the NFS rationale). Parameterized
+  # for the same reason as every other image in the chart: a cluster
+  # restricted to a private mirror cannot pull from Docker Hub.
+  initImage:
+    repository: busybox
+    tag: "1.36"
     pullPolicy: IfNotPresent
   primary:
     persistence:
@@ -526,7 +571,33 @@ agent:
     # config.
     LOG_SCOPE_LABELS: "service,app,app_kubernetes_io_name,app_kubernetes_io_instance,container,pod,namespace,job"
 
+  # Externally-managed credentials. Set this to the name of a Secret you
+  # create outside the chart — via External Secrets Operator, Vault Agent, the
+  # Secrets Store CSI driver, or by hand — and the chart renders NO Secret of
+  # its own, pointing every reference at yours instead. The `secrets:` block
+  # below is then ignored entirely and may be left at its placeholders.
+  #
+  # This is the GitOps path: a values file committed to a repo can name a
+  # Secret, but must never contain one. It also avoids a Helm-vs-controller
+  # ownership fight over the same Secret name, where Helm's drift detection
+  # and the controller's refresh loop each revert the other on their own
+  # interval.
+  #
+  # Expected keys (all optional — an absent key disables its feature with a
+  # startup warning, exactly as an unset env var does today):
+  #   ANTHROPIC_API_KEY, SLACK_WEBHOOK_URL, TEAMS_WEBHOOK_URL, GITHUB_TOKEN,
+  #   GITHUB_REPO, LLOPSTER_API_TOKEN, LLOPSTER_LICENSE_KEY,
+  #   AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN
+  #
+  # KNOWN GAP: the pod's checksum/secrets annotation is computed from the
+  # `secrets:` values below, so it cannot detect a rotation inside an
+  # externally-managed Secret — the agent will keep the old value until the
+  # pod restarts. Pair this with a reloader (e.g. stakater/Reloader's
+  # secret.reloader.stakater.com/reload annotation) if you rotate in place.
+  existingSecret: ""
+
   # CHANGEME — placeholders, edit before installing. Stored in a k8s Secret.
+  # IGNORED when agent.existingSecret is set.
   secrets:
     ANTHROPIC_API_KEY: CHANGEME-anthropic-api-key
     SLACK_WEBHOOK_URL: CHANGEME-https://hooks.slack.com/services/...
@@ -559,6 +630,73 @@ agent:
     AWS_SECRET_ACCESS_KEY: ""
     AWS_SESSION_TOKEN: ""
 
+  # GitHub target. Defaults to public github.com, so existing installs need
+  # nothing here. Point both fields at a GitHub Enterprise Server instance to
+  # open PRs against internal repos:
+  #
+  #   git:
+  #     host: ghes.example-corp.net
+  #
+  # `host` drives the codebase-clone init container's credential rewrite;
+  # `apiBase` drives the agent's REST calls (PR creation + the Settings page's
+  # GitHub connection test). Leaving `apiBase` empty derives the GHES
+  # convention `https://<host>/api/v3` automatically — set it explicitly only
+  # if your instance serves the API somewhere else.
+  #
+  # Private CA: if your GHES presents a certificate signed by an internal CA,
+  # mount the bundle with agent.extraVolumes / agent.extraVolumeMounts and set
+  # SSL_CERT_FILE (agent, for httpx) and GIT_SSL_CAINFO (init container, for
+  # git) via agent.extraEnv / agent.codebaseClone.extraEnv. See PRODUCTION.md.
+  git:
+    host: github.com
+    apiBase: ""
+
+  # Escape hatches for cluster-specific needs the chart doesn't model: extra
+  # env vars and extra volumes on the agent container. `extraEnv` takes the
+  # full EnvVar shape (so valueFrom/secretKeyRef works, unlike the `env` map
+  # above, which is name/value only).
+  extraEnv: []
+  # Example — trust an internal CA for GHES over HTTPS:
+  # extraEnv:
+  #   - name: SSL_CERT_FILE
+  #     value: /etc/ssl/corp/ca-bundle.crt
+  extraVolumes: []
+  # extraVolumes:
+  #   - name: corp-ca
+  #     configMap:
+  #       name: corp-ca-bundle
+  extraVolumeMounts: []
+  # extraVolumeMounts:
+  #   - name: corp-ca
+  #     mountPath: /etc/ssl/corp
+  #     readOnly: true
+
+  # The init container that clones agent.codebases into /codebases before the
+  # agent starts. Only rendered when agent.codebases is non-empty.
+  codebaseClone:
+    # Pinned by tag, not `latest`: a floating tag is not reproducible and
+    # drifts under any policy that pins digests. v2.54.0 is the exact image
+    # `alpine/git:latest` resolved to when this default was set (identical
+    # digest), so pinning changed nothing about what gets pulled.
+    #
+    # Retag into your own registry for clusters that can only pull from a
+    # private mirror:
+    #   repository: <account>.dkr.ecr.<region>.amazonaws.com/mirror/alpine-git
+    image:
+      repository: alpine/git
+      tag: v2.54.0
+      pullPolicy: IfNotPresent
+
+    # Extra env for the clone init container only. Separate from
+    # agent.extraEnv because git needs GIT_SSL_CAINFO where httpx needs
+    # SSL_CERT_FILE, and the init container should not inherit unrelated
+    # agent env. agent.extraVolumes / agent.extraVolumeMounts are mounted
+    # into BOTH containers, so one CA volume serves them together.
+    extraEnv: []
+    # extraEnv:
+    #   - name: GIT_SSL_CAINFO
+    #     value: /etc/ssl/corp/ca-bundle.crt
+
   # Per-service registry. Each key matches the `service` label on an alert;
   # `github_repo` is the repo LLopster opens PRs against; `codebase_path` is
   # where the agent reads source from (populated by the init-container
@@ -573,14 +711,24 @@ agent:
   #     github_repo: my-org/payments-api
 
   # Init-container codebase clones — populates /codebases/<name> before
-  # the agent starts. Each entry: name (matches servicesConfig key),
-  # gitRepo, branch (optional, default "main").
+  # the agent starts. Each entry: name (matches servicesConfig key), the repo
+  # to clone, and branch (optional, default "main").
+  #
+  # Name the repo either way:
+  #   repo: my-org/payments-api   → derived as https://<agent.git.host>/<repo>.git
+  #   gitRepo: https://…/x.git    → an explicit URL, which always wins
+  # The `repo` shorthand exists so a GitHub Enterprise Server install names
+  # its host ONCE (agent.git.host) instead of repeating it in every entry,
+  # where it could drift from the host used for credential rewriting and the
+  # REST API base. Use `gitRepo` for a repo on a different host than the rest.
   codebases: []
   # Example:
   # codebases:
   #   - name: payments-api
-  #     gitRepo: https://github.com/my-org/payments-api.git
+  #     repo: my-org/payments-api
   #     branch: main
+  #   - name: legacy-svc
+  #     gitRepo: https://github.com/other-org/legacy-svc.git
 
 # ---------------------------------------------------------------------------
 # llopster-dashboard (read-only UI — survives agent crash loops)

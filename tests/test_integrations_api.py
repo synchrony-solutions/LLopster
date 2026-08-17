@@ -300,3 +300,63 @@ async def test_test_github_exception_surface():
     body = r.json()
     assert body["ok"] is False
     assert "dns lookup failed" in body["detail"]
+
+
+# ---------------------------------------------------------------------------
+# GitHub Enterprise Server — API base + token classification
+# ---------------------------------------------------------------------------
+
+async def test_test_github_uses_configured_api_base():
+    """The connection test must hit the configured API root, so a GHES install
+    validates its own instance rather than reporting on api.github.com."""
+    fake_cfg = replace(
+        _ia.config,
+        github_token="ghp_fake",
+        github_api_base="https://ghes.example.net/api/v3",
+    )
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json = MagicMock(return_value={"login": "enterprise-user"})
+    http = AsyncMock()
+    http.get = AsyncMock(return_value=mock_resp)
+    app = _build_app(http)
+
+    with patch.object(_ia, "config", fake_cfg):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            r = await c.post("/api/integrations/test/github")
+
+    assert r.json()["ok"] is True
+    assert http.get.call_args.args[0] == "https://ghes.example.net/api/v3/user"
+
+
+async def test_test_github_defaults_to_public_api():
+    fake_cfg = replace(_ia.config, github_token="ghp_fake")
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json = MagicMock(return_value={"login": "octocat"})
+    http = AsyncMock()
+    http.get = AsyncMock(return_value=mock_resp)
+    app = _build_app(http)
+
+    with patch.object(_ia, "config", fake_cfg):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            await c.post("/api/integrations/test/github")
+
+    assert http.get.call_args.args[0] == "https://api.github.com/user"
+
+
+def test_classify_github_token_kinds():
+    assert _ia._classify_github_token("") == ""
+    assert _ia._classify_github_token("github_pat_11ABC") == "fine-grained-pat"
+    assert _ia._classify_github_token("ghp_abc") == "classic-pat"
+    assert _ia._classify_github_token("ghs_abc") == "oauth"
+
+
+def test_classify_github_token_recognizes_legacy_bare_hex():
+    """Older GHES PATs are bare 40-char hex with no prefix. They are perfectly
+    valid, so they must not be reported as 'unknown' on the Settings page."""
+    assert _ia._classify_github_token("a" * 40) == "legacy-pat"
+    assert _ia._classify_github_token("0123456789abcdef" * 2 + "01234567") == "legacy-pat"
+    # Not hex / wrong length still falls through to unknown.
+    assert _ia._classify_github_token("zzzz") == "unknown"
+    assert _ia._classify_github_token("a" * 39) == "unknown"

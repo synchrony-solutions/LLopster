@@ -13,21 +13,62 @@
   explicitly trusted/local-only deploy, set agent.allowUnauthenticated=true to
   keep the no-token convenience (the agent still logs a loud startup warning).
 */ -}}
-{{- $apiToken := .Values.agent.secrets.LLOPSTER_API_TOKEN | default "" -}}
+{{- $apiToken := dig "secrets" "LLOPSTER_API_TOKEN" "" .Values.agent -}}
+{{- /* An externally-managed Secret satisfies the gate: the operator has taken
+   ownership of the credentials, and the chart cannot see inside the Secret to
+   verify the token is present. Without this, every External-Secrets install
+   with an Ingress would hard-fail here — agent.secrets is empty by design in
+   that mode. The agent still logs its loud startup warning if the token turns
+   out to be genuinely absent at runtime, which is the check that can actually
+   see the value. */ -}}
+{{- $externallyManagedSecret := .Values.agent.existingSecret | default "" -}}
 {{- $externalSvcTypes := list "LoadBalancer" "NodePort" -}}
 {{- $agentSvcType := dig "service" "type" "ClusterIP" .Values.agent -}}
 {{- $dashboardSvcType := dig "service" "type" "ClusterIP" .Values.dashboard -}}
 {{- $agentExposed := or (dig "services" "agent" "enabled" false .Values.ingress) (has $agentSvcType $externalSvcTypes) -}}
 {{- $dashboardExposed := or (dig "services" "dashboard" "enabled" false .Values.ingress) (has $dashboardSvcType $externalSvcTypes) -}}
-{{- if and (or $agentExposed $dashboardExposed) (not $apiToken) (not .Values.agent.allowUnauthenticated) -}}
-{{- fail "Refusing to render: the agent or dashboard is exposed (Ingress enabled, or a Service of type LoadBalancer/NodePort) but agent.secrets.LLOPSTER_API_TOKEN is empty, which would expose /webhook, the trigger routes, and settings/license UNAUTHENTICATED while holding a write-scoped GitHub PAT. Set agent.secrets.LLOPSTER_API_TOKEN to a strong random value (AlertManager must then send it as a bearer token — see helm-chart/docs/integration-recipes/alertmanager-receiver.yaml). For an explicitly trusted/local-only deploy, set agent.allowUnauthenticated=true." -}}
+{{- if and (or $agentExposed $dashboardExposed) (not $apiToken) (not $externallyManagedSecret) (not .Values.agent.allowUnauthenticated) -}}
+{{- fail "Refusing to render: the agent or dashboard is exposed (Ingress enabled, or a Service of type LoadBalancer/NodePort) but agent.secrets.LLOPSTER_API_TOKEN is empty, which would expose /webhook, the trigger routes, and settings/license UNAUTHENTICATED while holding a write-scoped GitHub PAT. Set agent.secrets.LLOPSTER_API_TOKEN to a strong random value (AlertManager must then send it as a bearer token — see helm-chart/docs/integration-recipes/alertmanager-receiver.yaml), or deliver credentials through an external secret manager via agent.existingSecret. For an explicitly trusted/local-only deploy, set agent.allowUnauthenticated=true." -}}
+{{- end -}}
+{{- /*
+  Database gate. Also unconditional — the dashboard needs a DATABASE_URL just
+  as much as the agent, so a dashboard-only install must not slip past it.
+
+  With the bundled PostgreSQL off, DATABASE_URL used to simply never be set:
+  the app fell back to SQLite under /app/data, and that write fails against
+  this chart's own readOnlyRootFilesystem: true. The documented escape hatch
+  was unusable in practice, and the failure surfaced as a confusing runtime
+  crash-loop rather than an install-time error. Fail here instead, while the
+  operator is still looking at their values file.
+*/ -}}
+{{- if not .Values.postgresql.enabled -}}
+{{- $extDbSecret := dig "existingSecret" "" (.Values.externalDatabase | default dict) -}}
+{{- if not $extDbSecret -}}
+{{- /* Checked PER COMPONENT, not "either one". The agent and the dashboard
+   are separate pods that each open their own connection, so an
+   agent.env.DATABASE_URL passthrough alone still leaves the dashboard on the
+   broken SQLite fallback. externalDatabase.existingSecret covers both at
+   once, which is why it is the recommended path. */ -}}
+{{- if and .Values.agent.enabled (not (dig "env" "DATABASE_URL" "" .Values.agent)) -}}
+{{- fail "Refusing to render: postgresql.enabled=false but the agent has no database configured, so it would fall back to a SQLite file under /app/data — a write that fails against the chart's readOnlyRootFilesystem. Set externalDatabase.existingSecret (a Secret holding a DATABASE_URL key, e.g. an RDS connection string delivered by External Secrets — this covers the agent and dashboard together) or, if you accept the connection string being readable in the PodSpec, agent.env.DATABASE_URL." -}}
+{{- end -}}
+{{- if and .Values.dashboard.enabled (not (dig "env" "DATABASE_URL" "" .Values.dashboard)) -}}
+{{- fail "Refusing to render: postgresql.enabled=false but the dashboard has no database configured, so it would fall back to a SQLite file under /app/data — a write that fails against the chart's readOnlyRootFilesystem. The dashboard is a separate pod with its own connection, so an agent-only DATABASE_URL is not enough. Set externalDatabase.existingSecret (a Secret holding a DATABASE_URL key — this covers both components) or, if you accept the connection string being readable in the PodSpec, dashboard.env.DATABASE_URL as well." -}}
+{{- end -}}
+{{- end -}}
 {{- end -}}
 {{- if .Values.agent.enabled }}
+{{- if not .Values.agent.existingSecret }}
 ---
 # Sensitive credentials consumed by the agent. Edit the values under
 # `agent.secrets` in values.yaml before installing — they're committed
 # as Secret stringData here so Helm can manage them with the rest of the
 # release. Rotate via `helm upgrade` after editing values.
+#
+# NOT rendered when agent.existingSecret is set — in that mode an external
+# secret manager owns the Secret and Helm must never write it, or Helm's
+# drift detection and the external controller's refresh loop each revert
+# the other on their own interval.
 apiVersion: v1
 kind: Secret
 metadata:
@@ -61,6 +102,7 @@ stringData:
   {{- if .Values.agent.secrets.AWS_SESSION_TOKEN }}
   AWS_SESSION_TOKEN: {{ .Values.agent.secrets.AWS_SESSION_TOKEN | quote }}
   {{- end }}
+{{- end }}
 ---
 {{- if .Values.agent.serviceAccount.create }}
 # ServiceAccount for the agent pod. Its primary job is to carry the IRSA /
@@ -135,24 +177,34 @@ spec:
       # at runtime (services.yaml entries point at /codebases/<name>).
       initContainers:
         - name: clone-codebases
-          image: alpine/git:latest
+          image: "{{ dig "codebaseClone" "image" "repository" "alpine/git" .Values.agent }}:{{ dig "codebaseClone" "image" "tag" "v2.54.0" .Values.agent }}"
+          imagePullPolicy: {{ dig "codebaseClone" "image" "pullPolicy" "IfNotPresent" .Values.agent }}
           command:
             - sh
             - -c
             - |
               set -euo pipefail
-              git config --global url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf "https://github.com/"
+              GIT_HOST="{{ include "llopster.github.host" . }}"
+              git config --global url."https://x-access-token:${GITHUB_TOKEN}@${GIT_HOST}/".insteadOf "https://${GIT_HOST}/"
               {{- range .Values.agent.codebases }}
               rm -rf /codebases/{{ .name }}
-              REPO_URL="{{ .gitRepo }}"
-              # Only inject the GITHUB_TOKEN into the URL if it looks like a
-              # real PAT.  Otherwise (placeholder or empty) we fall through
-              # to anonymous clone — the placeholder used to produce a
-              # malformed auth header that made git return HTTP 400.
+              REPO_URL="{{ include "llopster.codebase.url" (dict "ctx" $ "cb" .) }}"
+              # Use the GITHUB_TOKEN unless it is absent or still the chart's
+              # CHANGEME placeholder (the placeholder produced a malformed auth
+              # header that made git return HTTP 400).  We deliberately do NOT
+              # gate on a token prefix: GitHub Enterprise Server admins can
+              # configure their own prefixes and older GHES PATs are bare
+              # 40-char hex, so a prefix allowlist silently downgrades a valid
+              # enterprise token to an anonymous clone that then fails against
+              # a private repo with a confusing error.  The prefix check
+              # survives only as a hint in the log line below.
               if [ -n "${GITHUB_TOKEN:-}" ] && \
-                 [ "${GITHUB_TOKEN#CHANGEME}" = "${GITHUB_TOKEN}" ] && \
-                 echo "${GITHUB_TOKEN}" | grep -qE "^(ghp_|github_pat_|gho_|ghs_|ghu_)"; then
-                echo "Using GITHUB_TOKEN for git clone auth"
+                 [ "${GITHUB_TOKEN#CHANGEME}" = "${GITHUB_TOKEN}" ]; then
+                if echo "${GITHUB_TOKEN}" | grep -qE "^(ghp_|github_pat_|gho_|ghs_|ghu_)"; then
+                  echo "Using GITHUB_TOKEN for git clone auth (recognized github.com token prefix)"
+                else
+                  echo "Using GITHUB_TOKEN for git clone auth (unrecognized prefix — expected for GitHub Enterprise Server)"
+                fi
                 REPO_URL=$(echo "$REPO_URL" | sed "s|https://|https://${GITHUB_TOKEN}@|")
               else
                 echo "GITHUB_TOKEN missing or placeholder; cloning anonymously (works only for public repos)"
@@ -167,6 +219,12 @@ spec:
             # writable path for `git config --global` to land its .gitconfig.
             - name: HOME
               value: /tmp
+            {{- /* Init-container-only extras — e.g. GIT_SSL_CAINFO pointing at
+               a corporate CA bundle mounted via agent.extraVolumes, which a
+               private GitHub Enterprise Server over HTTPS requires. */ -}}
+            {{- with dig "codebaseClone" "extraEnv" (list) .Values.agent }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           {{- with .Values.agent.securityContext }}
           securityContext:
             {{- toYaml . | nindent 12 }}
@@ -177,6 +235,11 @@ spec:
             # Writable scratch for HOME/.gitconfig under a read-only root fs.
             - name: tmp
               mountPath: /tmp
+            {{- /* Same extra mounts as the agent container, so a single CA
+               bundle volume serves both git (here) and httpx (there). */ -}}
+            {{- with .Values.agent.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
       {{- end }}
       containers:
         - name: agent
@@ -207,7 +270,7 @@ spec:
               {{- end }}
             - name: ANTHROPIC_API_KEY
               valueFrom:
-                secretKeyRef: { name: llopster-agent, key: ANTHROPIC_API_KEY }
+                {{- include "llopster.agent.secretKeyRef" (dict "ctx" $ "key" "ANTHROPIC_API_KEY") | nindent 16 }}
             # LLM provider selector. "anthropic" (default) uses the direct
             # API + ANTHROPIC_API_KEY above; "bedrock" routes Claude through
             # AWS Bedrock. See agent.llm in values.yaml.
@@ -228,20 +291,25 @@ spec:
               value: {{ .Values.agent.llm.bedrock.triageModel | quote }}
             - name: BEDROCK_INVESTIGATION_MODEL
               value: {{ .Values.agent.llm.bedrock.investigationModel | quote }}
-            {{- if .Values.agent.secrets.AWS_ACCESS_KEY_ID }}
-            # Static-key fallback (non-IRSA clusters). Absent → the boto3
-            # credential chain (IRSA / instance profile) is used instead.
+            {{- /* Static-key fallback (non-IRSA clusters). Absent → the boto3
+               credential chain (IRSA / instance profile) is used instead.
+               With an externally-managed Secret the chart cannot see whether
+               these keys exist, so it emits optional refs unconditionally:
+               present keys are picked up, absent ones are ignored by the
+               kubelet. Gating on agent.secrets here would have silently
+               dropped static keys that DO live in the external Secret. */ -}}
+            {{- if or (dig "secrets" "AWS_ACCESS_KEY_ID" "" .Values.agent) .Values.agent.existingSecret }}
             - name: AWS_ACCESS_KEY_ID
               valueFrom:
-                secretKeyRef: { name: llopster-agent, key: AWS_ACCESS_KEY_ID }
+                {{- include "llopster.agent.secretKeyRef" (dict "ctx" $ "key" "AWS_ACCESS_KEY_ID") | nindent 16 }}
             - name: AWS_SECRET_ACCESS_KEY
               valueFrom:
-                secretKeyRef: { name: llopster-agent, key: AWS_SECRET_ACCESS_KEY }
+                {{- include "llopster.agent.secretKeyRef" (dict "ctx" $ "key" "AWS_SECRET_ACCESS_KEY") | nindent 16 }}
             {{- end }}
-            {{- if .Values.agent.secrets.AWS_SESSION_TOKEN }}
+            {{- if or (dig "secrets" "AWS_SESSION_TOKEN" "" .Values.agent) .Values.agent.existingSecret }}
             - name: AWS_SESSION_TOKEN
               valueFrom:
-                secretKeyRef: { name: llopster-agent, key: AWS_SESSION_TOKEN }
+                {{- include "llopster.agent.secretKeyRef" (dict "ctx" $ "key" "AWS_SESSION_TOKEN") | nindent 16 }}
             {{- end }}
             {{- end }}
             # Notification channel: slack (default) | teams | none. See
@@ -250,33 +318,41 @@ spec:
               value: {{ .Values.agent.notifications.provider | default "slack" | quote }}
             - name: SLACK_WEBHOOK_URL
               valueFrom:
-                secretKeyRef: { name: llopster-agent, key: SLACK_WEBHOOK_URL }
+                {{- include "llopster.agent.secretKeyRef" (dict "ctx" $ "key" "SLACK_WEBHOOK_URL") | nindent 16 }}
             {{- if eq (.Values.agent.notifications.provider | default "slack") "teams" }}
             - name: TEAMS_WEBHOOK_URL
               valueFrom:
-                secretKeyRef: { name: llopster-agent, key: TEAMS_WEBHOOK_URL }
+                {{- include "llopster.agent.secretKeyRef" (dict "ctx" $ "key" "TEAMS_WEBHOOK_URL") | nindent 16 }}
             {{- end }}
             - name: GITHUB_TOKEN
               valueFrom:
-                secretKeyRef: { name: llopster-agent, key: GITHUB_TOKEN }
+                {{- include "llopster.agent.secretKeyRef" (dict "ctx" $ "key" "GITHUB_TOKEN") | nindent 16 }}
             - name: GITHUB_REPO
               valueFrom:
-                secretKeyRef: { name: llopster-agent, key: GITHUB_REPO }
+                {{- include "llopster.agent.secretKeyRef" (dict "ctx" $ "key" "GITHUB_REPO") | nindent 16 }}
+            # GitHub REST API root — derived from agent.git (see the helper),
+            # NOT set in agent.env, so it can't drift from the git host the
+            # clone init container rewrites. Defaults to the public
+            # https://api.github.com; a GHES install resolves to
+            # https://<host>/api/v3.
+            - name: GITHUB_API_BASE
+              value: {{ include "llopster.github.apiBase" . | quote }}
             # License key (paid-feature gate). Source of truth; the dashboard
             # Settings page can override it at runtime via the license_key
             # Setting. Empty = Community tier (gates nothing).
             - name: LLOPSTER_LICENSE_KEY
               valueFrom:
-                secretKeyRef: { name: llopster-agent, key: LLOPSTER_LICENSE_KEY }
+                {{- include "llopster.agent.secretKeyRef" (dict "ctx" $ "key" "LLOPSTER_LICENSE_KEY") | nindent 16 }}
             # Shared secret for inbound-surface auth (/webhook, trigger). Empty
             # disables the check (a loud startup warning is logged).
             - name: LLOPSTER_API_TOKEN
               valueFrom:
-                secretKeyRef: { name: llopster-agent, key: LLOPSTER_API_TOKEN }
-            {{- if .Values.postgresql.enabled }}
-            - name: DATABASE_URL
-              value: "postgresql+asyncpg://{{ .Values.postgresql.auth.username }}:{{ .Values.postgresql.auth.password }}@llopster-postgres:5432/{{ .Values.postgresql.auth.database }}"
-            {{- end }}
+                {{- include "llopster.agent.secretKeyRef" (dict "ctx" $ "key" "LLOPSTER_API_TOKEN") | nindent 16 }}
+            {{- /* DATABASE_URL always arrives by reference, never as a literal.
+               Interpolating the password into the PodSpec (as this did) leaks
+               it to `kubectl describe pod`, to `helm get values`, and into any
+               rendered manifest a GitOps controller stores. */ -}}
+            {{- include "llopster.databaseUrlEnv" . | nindent 12 }}
             - name: POD_NAME
               valueFrom:
                 fieldRef:
@@ -293,6 +369,12 @@ spec:
             # emptyDir, since the root filesystem is mounted read-only.
             - name: HOME
               value: /tmp
+            {{- /* Full-shape EnvVar escape hatch (valueFrom works here, unlike
+               the name/value-only agent.env map). Last in the list so an
+               operator can override a derived value above if they must. */ -}}
+            {{- with .Values.agent.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           {{- with .Values.agent.securityContext }}
           securityContext:
             {{- toYaml . | nindent 12 }}
@@ -309,6 +391,9 @@ spec:
             - name: codebases
               mountPath: /codebases
               readOnly: true
+            {{- end }}
+            {{- with .Values.agent.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
             {{- end }}
           # /health is a DB-free 200 — safe as a liveness target so a
           # transient Postgres outage doesn't restart-loop the pod that
@@ -338,6 +423,12 @@ spec:
         {{- if .Values.agent.codebases }}
         - name: codebases
           emptyDir: {}
+        {{- end }}
+        {{- /* Mounted into BOTH the clone init container and the agent — a
+           corporate CA bundle for a private GitHub Enterprise Server is
+           needed by git and httpx alike. */ -}}
+        {{- with .Values.agent.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
         {{- end }}
 ---
 apiVersion: v1
