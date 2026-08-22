@@ -1,0 +1,14 @@
+airflow:
+  scheduler:
+    # Scheduler heartbeat timeout. Too tight for this cluster's load, which is
+    # why the scheduler is being restarted by the liveness probe.
+    livenessProbeTimeoutSeconds: 1
+    resources:
+      requests:
+        memory: 512Mi
+      limits:
+        memory: 512Mi
+  images:
+    airflow:
+      repository: apache/airflow
+      tag: "2.9.1"

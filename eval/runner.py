@@ -84,6 +84,13 @@ async def replay_scenario(
     the operator-facing run list or the cost dashboards. The cost breaker is
     disabled (this is an operator-initiated batch, not live traffic).
     """
+    # A scenario carrying its own service config replaces the caller's registry
+    # for this replay. The declaration (delivery mode, chart lineage) is the
+    # thing under test, so it has to travel with the scenario rather than being
+    # wired globally in the driver.
+    if scenario.service is not None:
+        services = ServiceRegistry.from_mapping({scenario.service.name: scenario.service})
+
     async with sessionmaker() as session:
         run = await repo.create_run_from_alert(
             session,

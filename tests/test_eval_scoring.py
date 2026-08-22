@@ -15,6 +15,7 @@ def _scenario(
     expect_patch: bool = True,
     expected_files=("check_db_pool.py",),
     keywords=("pool",),
+    max_confidence=None,
 ) -> Scenario:
     alert = ParsedAlert(
         fingerprint="f", status="firing", alertname="DatabasePoolExhausted",
@@ -30,6 +31,7 @@ def _scenario(
         log_lines=[],
         metric_samples=[],
         ground_truth=GroundTruth(
+            max_confidence=max_confidence,
             expect_patch=expect_patch,
             expected_files=tuple(expected_files),
             root_cause_keywords=tuple(keywords),
@@ -128,3 +130,79 @@ def test_aggregate_computes_pass_rate():
     assert corpus.partial_count == 1
     assert corpus.wrong_count == 1
     assert corpus.pass_rate == pytest.approx(1 / 3)
+
+
+# ---------------------------------------------------------------------------
+# max_confidence: the undeliverable-fix grade (#24 part B, #25 option C).
+#
+# These scenarios fail differently from "wrong file". The diff can be perfect
+# and the run still worthless, because what the cluster runs is a packaged
+# artifact or a value set in a layer the agent never saw. Every gate in the
+# pipeline passes such a patch — so the thing being graded is the confidence.
+# ---------------------------------------------------------------------------
+
+UNDELIVERABLE = dict(expect_patch=False, max_confidence=2,
+                     expected_files=("values.yaml",), keywords=("repackage",))
+
+
+def test_confident_patch_on_an_undeliverable_fix_is_wrong():
+    """The worst outcome, and the one every other gate lets through."""
+    score = score_run(
+        _scenario(**UNDELIVERABLE),
+        _run(parsed_diff="--- a/values.yaml\n+++ b/values.yaml\n", confidence=5,
+             root_cause="bump the memory limit"),
+    )
+    assert score.label == "wrong"
+    assert "exceeds the 2/5 ceiling" in score.reason
+
+
+def test_low_confidence_patch_with_an_explanation_is_correct():
+    """A patch is acceptable if offered tentatively — the criterion is honesty
+    about deliverability, not silence."""
+    score = score_run(
+        _scenario(**UNDELIVERABLE),
+        _run(parsed_diff="--- a/values.yaml\n+++ b/values.yaml\n", confidence=2,
+             root_cause="needs a chart repackage before this takes effect"),
+    )
+    assert score.label == "correct"
+    assert score.patch_proposed is True
+
+
+def test_low_confidence_without_an_explanation_is_partial():
+    score = score_run(
+        _scenario(**UNDELIVERABLE),
+        _run(parsed_diff="--- a/values.yaml\n", confidence=1,
+             root_cause="the memory limit is too low"),
+    )
+    assert score.label == "partial"
+    assert "did not explain" in score.reason
+
+
+def test_withholding_the_patch_entirely_is_correct():
+    score = score_run(
+        _scenario(**UNDELIVERABLE),
+        _run(parsed_diff=None, confidence=1,
+             root_cause="cannot fix from this repo; needs a repackage"),
+    )
+    assert score.label == "correct"
+    assert "withheld" in score.reason
+
+
+def test_confidence_at_the_ceiling_passes():
+    """The ceiling is inclusive — `max_confidence: 2` means 2 is acceptable."""
+    score = score_run(
+        _scenario(**UNDELIVERABLE),
+        _run(parsed_diff="--- a/values.yaml\n", confidence=2,
+             root_cause="repackage required"),
+    )
+    assert score.label == "correct"
+
+
+def test_no_ceiling_keeps_the_old_noise_suppression_grade():
+    """Regression guard: scenarios without max_confidence are unaffected."""
+    score = score_run(
+        _scenario(expect_patch=False),
+        _run(parsed_diff="--- a/x.py\n", confidence=5),
+    )
+    assert score.label == "wrong"
+    assert "should have been skipped" in score.reason

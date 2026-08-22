@@ -1,0 +1,12 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "airflow-tool.fullname" . }}-worker
+spec:
+  replicas: {{ .Values.airflow.workers.replicas }}
+  template:
+    spec:
+      containers:
+        - name: worker
+          resources:
+            {{- toYaml .Values.airflow.workers.resources | nindent 12 }}

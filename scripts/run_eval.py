@@ -10,6 +10,11 @@ dashboard's pass-rate trend grows), and prints a summary table.
 Usage:
     .venv/bin/python scripts/run_eval.py
     .venv/bin/python scripts/run_eval.py --codebase demo-app --no-persist
+    .venv/bin/python scripts/run_eval.py --scenario-id oci-chart-undeliverable-patch
+
+Every replay costs live tokens, so `--scenario-id` narrows the run while
+iterating on one scenario (or on the prompt it exercises). Filtered runs are
+never persisted — see `_amain`.
 
 Deterministic/offline cousin: tests inject AsyncMock stages via eval.runner
 directly; this script wires the live clients. No PR is ever opened.
@@ -27,7 +32,12 @@ from pathlib import Path
 # repo root) to import the `eval` and `src` packages.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from eval.corpus import corpus_version, load_corpus  # noqa: E402
+from eval.corpus import (  # noqa: E402
+    UnknownScenarioError,
+    corpus_version,
+    load_corpus,
+    select_scenarios,
+)
 from eval.runner import replay_scenario
 from eval.scoring import aggregate, score_run
 from src.agent.investigator import SYSTEM_PROMPT as INVESTIGATION_PROMPT, Investigator
@@ -49,8 +59,13 @@ log = logging.getLogger("llopster.eval")
 
 
 def _build_services(codebase_path: str) -> ServiceRegistry:
-    """All current scenarios are demo-app bugs; point that service at the
-    frozen in-repo codebase so synthesis sees the buggy source."""
+    """Default registry for the demo-app scenarios; point that service at the
+    frozen in-repo codebase so synthesis sees the buggy source.
+
+    Scenarios that declare their own `service:` block (those exercising an
+    operator declaration such as `delivery` or `chart_lineage`) override this
+    per replay — see eval/runner.replay_scenario.
+    """
     return ServiceRegistry.from_mapping(
         {
             "demo-app": ServiceConfig(
@@ -69,6 +84,30 @@ async def _amain(args: argparse.Namespace) -> int:
     if not scenarios:
         log.error("no scenarios found — nothing to evaluate")
         return 1
+
+    try:
+        scenarios = select_scenarios(scenarios, args.scenario_id)
+    except UnknownScenarioError as e:
+        log.error("%s", e)
+        return 3
+
+    filtered = bool(args.scenario_id)
+    if filtered:
+        log.info(
+            "running %d of the corpus's scenarios: %s",
+            len(scenarios), ", ".join(s.id for s in scenarios),
+        )
+        if args.persist:
+            # A filtered run is a debugging aid, not a baseline. Recording one
+            # would put a row in the pass-rate trend whose numbers describe a
+            # hand-picked subset — "2/2 correct" sitting next to full-corpus
+            # results invites exactly the wrong conclusion.
+            log.warning(
+                "--scenario-id given: NOT persisting an eval_runs row "
+                "(a partial run would distort the pass-rate trend). "
+                "Re-run without --scenario-id to record a baseline."
+            )
+            args.persist = False
 
     if not config.anthropic_api_key:
         log.error("ANTHROPIC_API_KEY not set — cannot run a live eval")
@@ -164,6 +203,13 @@ def _print_summary(corpus) -> None:  # noqa: ANN001
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the LLopster eval corpus.")
     parser.add_argument("--scenarios", default=None, help="scenarios dir (default eval/scenarios)")
+    parser.add_argument(
+        "--scenario-id", action="append", default=None, metavar="ID",
+        help=(
+            "only replay these scenario ids (repeatable, or comma-separated). "
+            "Every replay costs live tokens. Filtered runs are never persisted."
+        ),
+    )
     parser.add_argument("--codebase", default="demo-app", help="demo-app codebase path (default ./demo-app)")
     parser.add_argument("--note", default=None, help="optional note stored on the eval run")
     parser.add_argument("--no-triage", action="store_true", help="skip the Haiku triage stage")

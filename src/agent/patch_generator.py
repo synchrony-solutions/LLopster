@@ -11,6 +11,7 @@ from src.agent.context_collector import AlertContext
 from src.agent.dedup import PreviousAttempt
 from src.agent.investigator import Investigation
 from src.agent.prompts import STAGE_SYNTHESIS, PromptResolver
+from src.services_registry import ChartLayer, Delivery
 
 log = logging.getLogger("llopster.patch")
 
@@ -183,6 +184,9 @@ class PatchGenerator:
         previous_attempt: PreviousAttempt | None = None,
         investigation: Investigation | None = None,
         stack: str | None = None,
+        delivery: Delivery | None = None,
+        chart_lineage: tuple[ChartLayer, ...] = (),
+        github_repo: str | None = None,
     ) -> PatchProposal:
         root = Path(codebase_path)
 
@@ -198,9 +202,17 @@ class PatchGenerator:
         used_narrowed = False
         file_count = 0
         if investigation is not None and investigation.affected_files:
-            codebase_blob, file_count = _load_codebase(
-                root, only_files=investigation.affected_files,
-            )
+            # The narrowed blob is what synthesis can actually read. When the
+            # delivery constraint tells the model to bump a version reference
+            # in this repo, that file has to be IN the blob — the investigator
+            # never flags it (it is deploy-side config, not a code path), and
+            # asking for a hunk against a file the model cannot see produces a
+            # fabricated diff that fails closed at `_locate_hunk`.
+            only_files = list(investigation.affected_files)
+            ref_path = _same_repo_version_ref(delivery, github_repo)
+            if ref_path and ref_path not in only_files:
+                only_files.append(ref_path)
+            codebase_blob, file_count = _load_codebase(root, only_files=only_files)
             if file_count == 0:
                 log.warning(
                     "patch_generator: every affected file was missing on disk "
@@ -217,6 +229,9 @@ class PatchGenerator:
             ctx,
             previous_attempt=previous_attempt,
             investigation=investigation if used_narrowed else None,
+            delivery=delivery,
+            chart_lineage=chart_lineage,
+            github_repo=github_repo,
         )
 
         cache_control: dict[str, str] = {"type": "ephemeral"}
@@ -340,6 +355,9 @@ def _format_alert_context(
     *,
     previous_attempt: PreviousAttempt | None = None,
     investigation: Investigation | None = None,
+    delivery: Delivery | None = None,
+    chart_lineage: tuple[ChartLayer, ...] = (),
+    github_repo: str | None = None,
 ) -> str:
     a = ctx.alert
     lines: list[str] = []
@@ -348,6 +366,15 @@ def _format_alert_context(
         lines += [""]
     if investigation is not None:
         lines += _format_investigation_handoff(investigation)
+        lines += [""]
+    # Operator-declared framing, grouped with the other handoff headers. Both
+    # live in the volatile block (after the codebase blob's cache_control
+    # marker), so adding them cannot invalidate the cached prefix.
+    if delivery is not None and delivery.is_indirect:
+        lines += _format_delivery_constraint(delivery, github_repo=github_repo)
+        lines += [""]
+    if chart_lineage:
+        lines += _format_chart_lineage(chart_lineage)
         lines += [""]
     lines += [
         "# Incident context",
@@ -376,6 +403,151 @@ def _format_alert_context(
         lines += ["", "## Errors collecting context"]
         lines += [f"- {e}" for e in ctx.errors]
     return "\n".join(lines)
+
+
+def _format_delivery_constraint(
+    delivery: Delivery, *, github_repo: str | None,
+) -> list[str]:
+    """State how a merged patch actually reaches the cluster.
+
+    Only emitted for the indirect modes. `git-manifest` is what the pipeline
+    has always assumed, so declaring it changes nothing and costs no tokens.
+
+    The failure this exists to prevent: under `oci-chart`/`image-build` a patch
+    to the source can be correct, apply cleanly, pass validation, merge — and
+    never reach the cluster, because what the cluster consumes is a packaged
+    artifact at a pinned version. Every gate in the pipeline passes it. Only
+    the operator's declaration can catch it, so it is stated as a hard
+    constraint on the answer rather than as background.
+
+    Whether the model is told to bump the version reference *in this diff*
+    depends on where that reference lives. A PR targets exactly one repo, so
+    asking for a cross-repo bump would request a patch the pipeline cannot open
+    — it would be refused at the path gate, or split across repos it cannot
+    span. Inclusion is therefore requested only when the reference is known to
+    sit in the repo this PR will target.
+    """
+    ref = delivery.version_ref
+    same_repo = bool(
+        ref is not None and ref.repo and github_repo and ref.repo == github_repo
+    )
+
+    if delivery.mode == "oci-chart":
+        what = (
+            "This service's chart is PACKAGED and pushed to a registry. Editing "
+            "the chart source in this repo does NOT change anything in the "
+            "cluster until the chart is repackaged and the version reference "
+            "that the cluster consumes is bumped."
+        )
+    else:  # image-build
+        what = (
+            "This service's image is BUILT by a CI pipeline. Editing the source "
+            "in this repo does NOT change anything in the cluster until a new "
+            "image is built and the image tag that the cluster consumes is "
+            "bumped."
+        )
+
+    out = [
+        "# Delivery constraint — read before proposing a patch",
+        "",
+        f"**Delivery mode:** `{delivery.mode}`",
+        "",
+        what,
+        "",
+        "A source-only patch here will look correct, apply cleanly, pass "
+        "validation, and merge — and the alert will keep firing. Do not treat "
+        "a clean diff as a fix.",
+        "",
+    ]
+
+    if ref is not None and any((ref.repo, ref.path, ref.key)):
+        out += ["The version the cluster actually consumes is declared at:"]
+        if ref.repo:
+            out.append(f"- repo: `{ref.repo}`")
+        if ref.path:
+            out.append(f"- file: `{ref.path}`")
+        if ref.key:
+            out.append(f"- key: `{ref.key}`")
+        out.append("")
+
+    if same_repo:
+        out += [
+            "That reference is in the same repository this PR targets, so you "
+            "MUST include the version bump in the same diff as any source "
+            "change. A source change on its own is not an acceptable answer.",
+            "",
+            "If you cannot determine the correct new version, do not invent "
+            "one: omit the patch and return a confidence of 1 or 2 explaining "
+            "what needs to be released.",
+        ]
+    else:
+        out += [
+            "That reference is NOT in the repository this PR targets, and a "
+            "pull request can only span one repository. You therefore cannot "
+            "deliver a working fix in this diff.",
+            "",
+            "Return a confidence of 1 or 2. In `## Root Cause` and "
+            "`## Reasoning`, state the source change that is needed AND the "
+            "separate repackage/bump required to make it take effect, so a "
+            "human can carry out both. A confident-looking patch here would be "
+            "worse than no patch.",
+        ]
+    return out
+
+
+def _format_chart_lineage(lineage: tuple[ChartLayer, ...]) -> list[str]:
+    """Name the chart layers, including the ones outside the codebase blob.
+
+    The model is correctly forbidden from inventing paths, so when the causal
+    surface is split across charts it cannot see, it names the closest-looking
+    file in the tree it *can* see — a confident answer about the wrong file.
+    Telling it which layers exist but are invisible converts a share of those
+    into honest low-confidence results.
+
+    Listed outermost first. In Helm a parent chart's values override a
+    subchart's, so an outer layer silently wins over an inner one — which is
+    how a clean patch to a visible inner layer produces a merged PR and an
+    alert that never clears.
+    """
+    out = [
+        "# Chart lineage",
+        "",
+        "This service is delivered by a chart-of-charts. Layers are listed "
+        "outermost first — an outer layer's values OVERRIDE an inner layer's:",
+        "",
+    ]
+    for i, layer in enumerate(lineage, start=1):
+        bits = [f"{i}. **{layer.name}**"]
+        if layer.version:
+            bits.append(f"v{layer.version}")
+        if layer.repo:
+            bits.append(f"(`{layer.repo}`)")
+        bits.append(
+            "— visible in the codebase below" if layer.visible
+            else "— **NOT VISIBLE to you**"
+        )
+        out.append(" ".join(bits))
+
+    invisible = [layer.name for layer in lineage if not layer.visible]
+    out += [""]
+    if invisible:
+        out += [
+            "You have not been shown: " + ", ".join(f"`{n}`" for n in invisible) + ".",
+            "",
+            "If a values key is set in one of those layers, it overrides the "
+            "same key wherever you can see it, and a patch to the visible copy "
+            "has NO EFFECT. When the most likely cause sits in a layer you "
+            "cannot see, say so in `## Root Cause` and return a confidence of "
+            "1 or 2. Do not patch the nearest visible file to have something "
+            "to propose — naming the layer a human should look in is the more "
+            "useful answer.",
+        ]
+    else:
+        out += [
+            "Every layer is visible in the codebase below, so the full values "
+            "precedence chain is available to you.",
+        ]
+    return out
 
 
 def _format_investigation_handoff(inv: Investigation) -> list[str]:
@@ -456,3 +628,23 @@ def _format_previous_attempt(p: PreviousAttempt) -> list[str]:
             "",
         ]
     return out
+
+
+def _same_repo_version_ref(
+    delivery: Delivery | None, github_repo: str | None,
+) -> str | None:
+    """The declared version-reference path when it is in the repo this PR
+    targets, and the delivery mode makes bumping it part of the answer.
+
+    Mirrors `processor._same_repo_version_ref_path`, which widens the PR path
+    allowlist by the same path. Both have to agree: the prompt asks for the
+    bump, the blob has to show the file, and the gate has to let it through.
+    """
+    if delivery is None or not delivery.is_indirect:
+        return None
+    ref = delivery.version_ref
+    if ref is None or not ref.path or not ref.repo:
+        return None
+    if github_repo is None or ref.repo != github_repo:
+        return None
+    return ref.path

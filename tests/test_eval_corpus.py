@@ -11,16 +11,30 @@ from eval.corpus import (
     corpus_version,
     load_corpus,
     load_scenario,
+    select_scenarios,
+    UnknownScenarioError,
 )
 
 # The five seeded demo-app bugs we froze as the regression baseline.
-EXPECTED_IDS = {
+# Seeded demo-app bugs: the agent is expected to produce a patch.
+EXPECTED_PATCH_IDS = {
     "db-pool-exhausted",
     "helm-values-misconfigured",
     "cache-hit-rate-low",
     "upstream-timeout-spike",
     "heartbeat-stale",
 }
+
+# Undeliverable-fix scenarios: the correct answer is an honest low confidence,
+# because what the cluster runs is a packaged artifact or a value set in a
+# chart layer the agent was never shown. These carry their own `service` block
+# with the operator declaration under test.
+EXPECTED_UNDELIVERABLE_IDS = {
+    "oci-chart-undeliverable-patch",
+    "invisible-chart-layer-override",
+}
+
+EXPECTED_IDS = EXPECTED_PATCH_IDS | EXPECTED_UNDELIVERABLE_IDS
 
 
 def test_corpus_loads_all_seeded_scenarios():
@@ -33,14 +47,51 @@ def test_each_scenario_is_well_formed():
         assert isinstance(s, Scenario)
         # The alert parsed out of the AlertManager payload.
         assert s.alert.alertname
-        assert s.alert.service == "demo-app"
+        # The alert's `service` label has to resolve to the registry entry the
+        # replay will use, or the run is skipped as an unmapped service. This
+        # is the invariant the old `== "demo-app"` check was really protecting.
+        expected_service = s.service.name if s.service else "demo-app"
+        assert s.alert.service == expected_service, (
+            f"{s.id}: alert service {s.alert.service!r} does not match the "
+            f"registry entry {expected_service!r} the replay will look up"
+        )
         # Recorded context is present so replay is offline.
         assert s.log_lines, f"{s.id} has no recorded log lines"
         assert s.metric_samples, f"{s.id} has no recorded metric samples"
         # Ground truth names at least one expected file + keywords.
         assert isinstance(s.ground_truth, GroundTruth)
-        assert s.ground_truth.expect_patch is True
         assert s.ground_truth.expected_files
+        assert s.ground_truth.expect_patch is (s.id in EXPECTED_PATCH_IDS)
+
+
+def test_undeliverable_scenarios_declare_a_confidence_ceiling():
+    """These scenarios grade confidence, not file selection. Without a ceiling
+    they would silently fall back to the noise-suppression grade, where any
+    patch is wrong — the opposite of what they are testing."""
+    for s in load_corpus():
+        if s.id not in EXPECTED_UNDELIVERABLE_IDS:
+            assert s.ground_truth.max_confidence is None
+            continue
+        assert s.ground_truth.max_confidence == 2, s.id
+        assert s.ground_truth.root_cause_keywords, s.id
+
+
+def test_undeliverable_scenarios_carry_a_usable_service_declaration():
+    """The declaration is the thing under test, so it has to be present, point
+    at a real fixture tree, and be reachable by the replay."""
+    for s in load_corpus():
+        if s.id not in EXPECTED_UNDELIVERABLE_IDS:
+            continue
+        assert s.service is not None, s.id
+        codebase = Path(s.service.codebase_path)
+        assert codebase.is_dir(), f"{s.id}: fixture codebase {codebase} missing"
+        assert any(codebase.rglob("*.yaml")), f"{s.id}: fixture codebase is empty"
+        # Every one of these declares at least one layer the agent cannot see,
+        # or a delivery mode that does not reconcile directly — otherwise the
+        # scenario is not exercising anything.
+        has_hidden_layer = any(not l.visible for l in s.service.chart_lineage)
+        indirect = s.service.delivery is not None and s.service.delivery.is_indirect
+        assert has_hidden_layer or indirect, s.id
 
 
 def test_recorded_context_timestamps_match_alert_start():
@@ -76,3 +127,66 @@ def test_malformed_scenario_raises(tmp_path):
 def test_default_scenarios_dir_exists():
     assert DEFAULT_SCENARIOS_DIR.exists()
     assert (DEFAULT_SCENARIOS_DIR).is_dir()
+
+
+# ---------------------------------------------------------------------------
+# select_scenarios — the --scenario-id filter.
+#
+# Every replay costs live tokens, so narrowing the run matters while iterating.
+# The failure to avoid is a typo'd id quietly selecting nothing: a clean run
+# over zero scenarios reads exactly like a pass.
+# ---------------------------------------------------------------------------
+
+def test_no_ids_returns_the_whole_corpus():
+    corpus = load_corpus()
+    assert select_scenarios(corpus, None) == corpus
+    assert select_scenarios(corpus, []) == corpus
+
+
+def test_selects_a_single_scenario():
+    selected = select_scenarios(load_corpus(), ["oci-chart-undeliverable-patch"])
+    assert [s.id for s in selected] == ["oci-chart-undeliverable-patch"]
+
+
+def test_repeated_flags_and_comma_separated_are_equivalent():
+    corpus = load_corpus()
+    ids = ["oci-chart-undeliverable-patch", "invisible-chart-layer-override"]
+    assert (
+        [s.id for s in select_scenarios(corpus, ids)]
+        == [s.id for s in select_scenarios(corpus, [",".join(ids)])]
+    )
+
+
+def test_selection_preserves_corpus_order_not_argument_order():
+    """Stable ordering keeps two runs of the same set comparable."""
+    corpus = load_corpus()
+    selected = select_scenarios(
+        corpus, ["oci-chart-undeliverable-patch,db-pool-exhausted"],
+    )
+    assert [s.id for s in selected] == [
+        s.id for s in corpus if s.id in {
+            "oci-chart-undeliverable-patch", "db-pool-exhausted",
+        }
+    ]
+
+
+def test_unknown_id_raises_and_names_the_alternatives():
+    with pytest.raises(UnknownScenarioError) as excinfo:
+        select_scenarios(load_corpus(), ["db-pool-exhuasted"])   # typo
+    message = str(excinfo.value)
+    assert "db-pool-exhuasted" in message
+    assert "db-pool-exhausted" in message   # the real id is offered
+
+
+def test_one_bad_id_among_good_ones_still_raises():
+    with pytest.raises(UnknownScenarioError):
+        select_scenarios(load_corpus(), ["db-pool-exhausted", "nope"])
+
+
+def test_filtered_corpus_version_differs_from_the_full_one():
+    """corpus_version is derived from the ids present, so a filtered run cannot
+    masquerade as a full-corpus result if one is ever recorded."""
+    corpus = load_corpus()
+    subset = select_scenarios(corpus, ["oci-chart-undeliverable-patch"])
+    assert corpus_version(subset) != corpus_version(corpus)
+    assert corpus_version(subset).startswith("1:")
