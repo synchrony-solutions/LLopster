@@ -18,6 +18,7 @@ from src.integrations.github_client import (
     _apply_patch,
     _extract_diff,
     _is_protected_path,
+    discover_chart_roots,
     _parse_file_patches,
     _make_branch_name,
     _pr_body,
@@ -519,7 +520,6 @@ Broaden the trigger.
         "docker-compose.yml",
         "docker-compose.override.yaml",
         "helm-chart/templates/agent.yaml",
-        "charts/app/values.yaml",
         ".circleci/config.yml",
         "Jenkinsfile",
         ".gitlab-ci.yml",
@@ -535,6 +535,7 @@ def test_is_protected_path_denies_execution_surfaces(path):
     "path",
     [
         "helm-values.yaml",          # app config, a legit seeded patch target
+        "charts/app/values.yaml",    # app config too — was over-blocked by name
         "check_db_pool.py",
         "src/agent/processor.py",
         "config/settings.yaml",
@@ -543,6 +544,88 @@ def test_is_protected_path_denies_execution_surfaces(path):
 )
 def test_is_protected_path_allows_normal_source(path):
     assert _is_protected_path(path) is False
+
+
+# ---------------------------------------------------------------------------
+# Chart templates are detected structurally (a directory holding Chart.yaml),
+# not by directory name. The name-based gate it replaced failed both ways: it
+# missed `<tool>/helm/templates/**` entirely while blocking `charts/**`
+# wholesale, including files that were never chart templates.
+# ---------------------------------------------------------------------------
+
+CHART_ROOTS = {"", "airflow-tool/helm", "Coordinator/parent_helm", "charts/app"}
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "airflow-tool/helm/templates/deployment.yaml",   # the missed case
+        "Coordinator/parent_helm/templates/sts.yaml",    # the missed case
+        "charts/app/templates/svc.yaml",
+        "templates/top-level-chart.yaml",                # chart at the repo root
+        "airflow-tool/helm/templates/nested/cm.yaml",
+    ],
+)
+def test_chart_templates_protected_regardless_of_directory_name(path):
+    assert _is_protected_path(path, CHART_ROOTS) is True
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "charts/app/values.yaml",                    # app config — a legit target
+        "charts/app/values-prod.yaml",
+        "charts/app/environments/prod/values.yaml",
+        "charts/app/README.md",
+        "airflow-tool/helm/values.yaml",
+        "src/charts/renderer.py",                    # source under a `charts` dir
+        "app/templates/index.html",                  # web templates, not a chart
+    ],
+)
+def test_non_template_paths_under_charts_are_not_protected(path):
+    assert _is_protected_path(path, CHART_ROOTS) is False
+
+
+def test_templates_path_fails_closed_when_discovery_unavailable():
+    """chart_roots=None means we could not look. Under-blocking here is the bug
+    being fixed, so an unresolvable `templates/` path is refused."""
+    assert _is_protected_path("airflow-tool/helm/templates/deployment.yaml") is True
+
+
+def test_empty_chart_roots_means_no_charts_not_unknown():
+    """Discovery ran and found no Chart.yaml — nothing in the repo can be a
+    chart template, so a `templates/` path is an ordinary file."""
+    assert _is_protected_path("app/templates/index.html", set()) is False
+
+
+def test_discover_chart_roots_finds_charts_by_manifest(tmp_path):
+    for rel in ("airflow-tool/helm", "Coordinator/parent_helm", "charts/app"):
+        d = tmp_path / rel
+        d.mkdir(parents=True)
+        (d / "Chart.yaml").write_text("apiVersion: v2\nname: x\n")
+        (d / "templates").mkdir()
+    # A `charts` directory with no manifest is not a chart root.
+    (tmp_path / "src" / "charts").mkdir(parents=True)
+    (tmp_path / "src" / "charts" / "renderer.py").write_text("x = 1\n")
+    # Vendored copies are skipped, matching the codebase loader.
+    vendored = tmp_path / "node_modules" / "pkg" / "chart"
+    vendored.mkdir(parents=True)
+    (vendored / "Chart.yaml").write_text("apiVersion: v2\nname: vendored\n")
+
+    assert discover_chart_roots(tmp_path) == {
+        "airflow-tool/helm", "Coordinator/parent_helm", "charts/app",
+    }
+
+
+def test_discover_chart_roots_reports_repo_root_as_empty_string(tmp_path):
+    (tmp_path / "Chart.yaml").write_text("apiVersion: v2\nname: x\n")
+    roots = discover_chart_roots(tmp_path)
+    assert roots == {""}
+    assert _is_protected_path("templates/deployment.yaml", roots) is True
+
+
+def test_discover_chart_roots_missing_directory_is_empty(tmp_path):
+    assert discover_chart_roots(tmp_path / "nope") == set()
 
 
 @pytest.mark.asyncio
