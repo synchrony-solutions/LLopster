@@ -5,6 +5,7 @@ import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 
 import httpx
 
@@ -67,12 +68,19 @@ class ProtectedPathError(PatchApplyError):
 # config (e.g. an app's own values/`*.yaml`) is intentionally absent — those are
 # legitimate patch targets (one seeded scenario fixes `helm-values.yaml`); the
 # affected_files allowlist is the second gate for everything else.
+#
+# Helm chart templates are the other unconditional deny, but they are NOT
+# matched here: a directory name is a convention, not a property of the tree.
+# Matching the literal components `helm-chart`/`charts` failed in both
+# directions — it missed chart templates in every repo laid out as
+# `<tool>/helm/templates/` (the documented "unconditional" gate silently did
+# not apply), and it blocked `charts/<x>/values.yaml` plus any ordinary source
+# file under a directory that happened to be named `charts`. Chart templates
+# are detected structurally instead, by `_is_chart_template` below.
 _PROTECTED_DIR_COMPONENTS = {
     ".github",          # workflows + composite actions (run with repo secrets)
     ".circleci",
     ".buildkite",
-    "helm-chart",       # chart templates define what the cluster runs
-    "charts",
 }
 _PROTECTED_BASENAMES = {
     ".gitlab-ci.yml",
@@ -95,7 +103,69 @@ def _normalize_repo_path(path: str) -> str:
     return "/".join(p for p in path.strip().split("/") if p and p != ".")
 
 
-def _is_protected_path(path: str) -> bool:
+# Directories never worth walking when hunting for chart manifests. Mirrors
+# the skip set `_load_codebase` uses, so discovery costs about what loading the
+# codebase already costs.
+_DISCOVERY_SKIP_DIRS = {
+    ".git", "node_modules", ".venv", "venv", "__pycache__", "dist", "build",
+}
+
+
+def discover_chart_roots(root: Path) -> set[str]:
+    """Repo-relative directories that are Helm chart roots (contain Chart.yaml).
+
+    Feeds `_is_protected_path`, which uses it to tell a chart template
+    (`<chart-root>/templates/**` — protected, it defines what the cluster runs)
+    from app config (`<chart-root>/values*.yaml`, `environments/**` — a
+    legitimate patch target) without depending on anyone's folder naming.
+
+    The repo root itself is reported as `""` when a `Chart.yaml` sits there, so
+    a top-level chart's `templates/foo.yaml` still resolves.
+
+    Assumes `root` is the repo root, which is how `agent.codebases` clones them
+    (`/codebases/<name>`) — the diff paths the gate checks are repo-relative,
+    so the two agree. Returns an empty set for a repo that genuinely has no
+    charts; that is a real answer, not a failure (see `_is_chart_template` for
+    how "no charts here" differs from "could not look").
+    """
+    roots: set[str] = set()
+    if not root.is_dir():
+        return roots
+    for manifest in root.rglob("Chart.yaml"):
+        rel_parts = manifest.relative_to(root).parts[:-1]
+        if any(part in _DISCOVERY_SKIP_DIRS for part in rel_parts):
+            continue
+        roots.add("/".join(rel_parts))
+    return roots
+
+
+def _is_chart_template(parts: list[str], chart_roots: set[str] | None) -> bool:
+    """True if `parts` is a path under some chart root's `templates/` directory.
+
+    `chart_roots=None` means discovery could not run (no codebase on disk, or a
+    caller that does not wire it). That is the one case where this fails
+    **closed**: any `templates/` path is treated as a chart template, because
+    under-blocking here is what let chart templates through in the first place.
+    The cost is over-blocking a web app's HTML `templates/` directory, which is
+    the safe direction to be wrong in — and the processor always supplies chart
+    roots, so the fallback does not fire in the normal pipeline.
+
+    An empty set is different: discovery ran and found no charts, so no path in
+    this repo can be a chart template.
+    """
+    if "templates" not in parts:
+        return False
+    if chart_roots is None:
+        return True  # discovery unavailable — fail closed
+    # The `templates` component must be a directory (something under it), so
+    # stop before the basename.
+    for i, part in enumerate(parts[:-1]):
+        if part == "templates" and "/".join(parts[:i]) in chart_roots:
+            return True
+    return False
+
+
+def _is_protected_path(path: str, chart_roots: set[str] | None = None) -> bool:
     """True if `path` is an execution/deploy surface off-limits to patches."""
     norm = _normalize_repo_path(path)
     if not norm:
@@ -103,6 +173,8 @@ def _is_protected_path(path: str) -> bool:
     parts = norm.split("/")
     if ".." in parts:
         return True  # path traversal — refuse
+    if _is_chart_template(parts, chart_roots):
+        return True
     lowered = [p.lower() for p in parts]
     if any(c in lowered for c in _PROTECTED_DIR_COMPONENTS):
         return True
@@ -340,6 +412,7 @@ class GitHubClient:
     async def open_pr(
         self, alert: ParsedAlert, proposal: PatchProposal, repo: str,
         *, draft: bool = True, allowed_paths: set[str] | None = None,
+        chart_roots: set[str] | None = None,
     ) -> PullRequest:
         diff = _extract_diff(proposal.text)
         file_patches = _parse_file_patches(diff)
@@ -355,7 +428,7 @@ class GitHubClient:
             if allowed_paths is not None else None
         )
         for file_path in file_patches:
-            if _is_protected_path(file_path):
+            if _is_protected_path(file_path, chart_roots):
                 raise ProtectedPathError(
                     f"{file_path}: refusing to patch a protected execution/deploy "
                     f"surface (.github/CI/Dockerfile/chart template)"
