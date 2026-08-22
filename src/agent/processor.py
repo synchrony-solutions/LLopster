@@ -13,6 +13,7 @@ import logging
 import re
 import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
@@ -41,6 +42,7 @@ from src.integrations.github_client import (
     GitHubClient,
     PatchApplyError,
     _extract_diff,
+    discover_chart_roots,
     proposal_has_patch,
 )
 from src.integrations.notifier import Notifier
@@ -432,9 +434,18 @@ async def process_alert(
                     and investigation_for_synthesis.affected_files
                     else None
                 )
+                # Chart roots for the unconditional chart-template deny. Scan
+                # the local clone for Chart.yaml so the gate keys on structure
+                # rather than on what the operator named their directories.
+                # Passing None (never from here) would make it fail closed on
+                # every `templates/` path, so keep this supplied even when the
+                # repo turns out to have no charts — an empty set is the
+                # precise answer for that case.
+                chart_roots = discover_chart_roots(Path(service_cfg.codebase_path))
                 pr = await github.open_pr(
                     alert, proposal, repo=service_cfg.github_repo,
                     draft=open_prs_as_draft, allowed_paths=allowed_paths,
+                    chart_roots=chart_roots,
                 )
                 pr_url = pr.url
                 async with sessionmaker() as session:
