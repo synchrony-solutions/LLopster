@@ -17,6 +17,7 @@ from src.agent.patch_generator import (
     _parse_confidence,
 )
 from src.integrations.loki_client import LogLine
+from src.services_registry import ChartLayer, Delivery, VersionRef
 from src.integrations.prometheus_client import MetricSample
 
 
@@ -510,3 +511,223 @@ async def test_generate_returns_zero_confidence_when_section_missing(tmp_path):
 
     proposal = await gen.generate(_make_ctx(), codebase_path=str(tmp_path))
     assert proposal.confidence == 0
+
+
+# ---------------------------------------------------------------------------
+# Delivery constraint (#24 part B) + chart lineage (#25 option C).
+#
+# Both are operator declarations about things the agent cannot observe. They
+# exist to stop the pipeline's worst failure: a patch that is correct, applies
+# cleanly, validates, merges — and never reaches the cluster. Every existing
+# gate passes such a patch, so these blocks are the only thing that can catch
+# it.
+# ---------------------------------------------------------------------------
+
+OCI_SAME_REPO = Delivery(
+    mode="oci-chart",
+    version_ref=VersionRef(
+        repo="acme/platform-charts",
+        path="clusters/prod/values-overrides.yaml",
+        key="airflow.image.tag",
+    ),
+)
+OCI_CROSS_REPO = Delivery(
+    mode="oci-chart",
+    version_ref=VersionRef(
+        repo="acme/platform-deployment",
+        path="clusters/prod/values-overrides.yaml",
+        key="airflow.image.tag",
+    ),
+)
+
+LINEAGE = (
+    ChartLayer(name="resrv", version="2.5.0", repo="acme/platform-charts"),
+    ChartLayer(name="airflow-tool", version="2.1.0", repo="acme/platform-charts",
+               visible=True),
+    ChartLayer(name="airflow", version="1.19.0", repo="apache/airflow"),
+)
+
+
+def test_no_declarations_leaves_the_prompt_untouched():
+    """Regression guard: a service without either block gets today's prompt."""
+    baseline = _format_alert_context(_make_ctx())
+    assert baseline == _format_alert_context(
+        _make_ctx(), delivery=None, chart_lineage=(),
+    )
+    assert "Delivery constraint" not in baseline
+    assert "Chart lineage" not in baseline
+
+
+def test_git_manifest_emits_nothing():
+    """Directly-reconciling delivery is what the pipeline already assumes, so
+    declaring it must not cost tokens or change the prompt."""
+    text = _format_alert_context(
+        _make_ctx(), delivery=Delivery(mode="git-manifest"),
+        github_repo="acme/platform-charts",
+    )
+    assert text == _format_alert_context(_make_ctx())
+
+
+@pytest.mark.parametrize("mode", ["oci-chart", "image-build"])
+def test_indirect_mode_states_the_patch_will_not_reconcile(mode):
+    text = _format_alert_context(
+        _make_ctx(), delivery=Delivery(mode=mode), github_repo="acme/x",
+    )
+    assert "Delivery constraint" in text
+    assert f"`{mode}`" in text
+    assert "does NOT change anything in the cluster" in text
+    # Without a known same-repo reference the only honest answer is a low
+    # confidence explanation, not a patch.
+    assert "confidence of 1 or 2" in text
+
+
+def test_same_repo_version_ref_requires_the_bump_in_the_same_diff():
+    text = _format_alert_context(
+        _make_ctx(), delivery=OCI_SAME_REPO, github_repo="acme/platform-charts",
+    )
+    assert "same repository this PR targets" in text
+    assert "MUST include the version bump in the same diff" in text
+    assert "clusters/prod/values-overrides.yaml" in text
+    assert "airflow.image.tag" in text
+
+
+def test_cross_repo_version_ref_does_not_ask_for_an_impossible_patch():
+    """A PR spans one repo. Asking for a bump in another repo would request a
+    patch the pipeline cannot open, so the prompt asks for an explanation."""
+    text = _format_alert_context(
+        _make_ctx(), delivery=OCI_CROSS_REPO, github_repo="acme/platform-charts",
+    )
+    assert "NOT in the repository this PR targets" in text
+    assert "confidence of 1 or 2" in text
+    assert "MUST include the version bump" not in text
+
+
+def test_unknown_ref_repo_is_treated_as_cross_repo():
+    """`repo` unset means we cannot prove it is local — do not instruct a bump
+    that may be undeliverable."""
+    text = _format_alert_context(
+        _make_ctx(),
+        delivery=Delivery(mode="oci-chart", version_ref=VersionRef(path="v.yaml")),
+        github_repo="acme/platform-charts",
+    )
+    assert "MUST include the version bump" not in text
+    assert "confidence of 1 or 2" in text
+
+
+def test_chart_lineage_names_the_invisible_layers():
+    text = _format_alert_context(_make_ctx(), chart_lineage=LINEAGE)
+    assert "Chart lineage" in text
+    assert "outermost first" in text
+    assert "NOT VISIBLE to you" in text
+    # The visible layer must not be listed as hidden, and both hidden ones must.
+    assert "`resrv`, `airflow`" in text
+    assert "airflow-tool" not in text.split("You have not been shown:")[1]
+
+
+def test_chart_lineage_all_visible_says_so_without_the_warning():
+    text = _format_alert_context(
+        _make_ctx(),
+        chart_lineage=(ChartLayer(name="only", version="1.0.0", visible=True),),
+    )
+    assert "Every layer is visible" in text
+    assert "NOT VISIBLE to you" not in text
+
+
+def test_both_blocks_coexist_and_precede_the_incident_context():
+    text = _format_alert_context(
+        _make_ctx(), delivery=OCI_SAME_REPO, chart_lineage=LINEAGE,
+        github_repo="acme/platform-charts",
+    )
+    assert text.index("Delivery constraint") < text.index("Chart lineage")
+    assert text.index("Chart lineage") < text.index("# Incident context")
+
+
+@pytest.mark.asyncio
+async def test_generate_forwards_declarations_into_the_volatile_block(tmp_path):
+    """The blocks must land in the second content block — the first carries the
+    cache_control marker, so putting per-service text there would invalidate
+    the cached codebase prefix."""
+    (tmp_path / "app.py").write_text("x = 1\n")
+    gen = PatchGenerator(api_key="sk-test", model="claude-opus-4-7")
+    fake_response = SimpleNamespace(
+        content=[SimpleNamespace(type="text", text=SAMPLE_RESPONSE_TEXT)],
+        model="claude-opus-4-7",
+        usage=SimpleNamespace(
+            input_tokens=500, output_tokens=100,
+            cache_read_input_tokens=0, cache_creation_input_tokens=0,
+        ),
+    )
+    gen.client.messages.create = AsyncMock(return_value=fake_response)
+
+    await gen.generate(
+        _make_ctx(), codebase_path=str(tmp_path),
+        delivery=OCI_SAME_REPO, chart_lineage=LINEAGE,
+        github_repo="acme/platform-charts",
+    )
+
+    content = gen.client.messages.create.call_args.kwargs["messages"][0]["content"]
+    cached, volatile = content[0], content[1]
+    assert "cache_control" in cached
+    assert "Delivery constraint" not in cached["text"]
+    assert "cache_control" not in volatile
+    assert "Delivery constraint" in volatile["text"]
+    assert "Chart lineage" in volatile["text"]
+
+
+@pytest.mark.asyncio
+async def test_same_repo_version_ref_is_added_to_the_narrowed_blob(tmp_path):
+    """The prompt tells the model to bump this file, so it must be able to read
+    it — the investigator never flags deploy-side config, and a hunk written
+    against an unseen file fails closed at apply time."""
+    (tmp_path / "check.py").write_text("TIMEOUT = 1\n")
+    (tmp_path / "values-overrides.yaml").write_text("airflow:\n  tag: 1.0.0\n")
+
+    gen = PatchGenerator(api_key="sk-test", model="claude-opus-4-7")
+    gen.client.messages.create = AsyncMock(return_value=SimpleNamespace(
+        content=[SimpleNamespace(type="text", text=SAMPLE_RESPONSE_TEXT)],
+        model="claude-opus-4-7",
+        usage=SimpleNamespace(input_tokens=1, output_tokens=1,
+                              cache_read_input_tokens=0,
+                              cache_creation_input_tokens=0),
+    ))
+
+    proposal = await gen.generate(
+        _make_ctx(), codebase_path=str(tmp_path),
+        investigation=_investigation(["check.py"]),
+        delivery=Delivery(mode="oci-chart", version_ref=VersionRef(
+            repo="acme/charts", path="values-overrides.yaml", key="airflow.tag")),
+        github_repo="acme/charts",
+    )
+
+    blob = gen.client.messages.create.call_args.kwargs["messages"][0]["content"][0]["text"]
+    assert "values-overrides.yaml" in blob
+    assert "airflow:\n  tag: 1.0.0" in blob
+    assert proposal.used_narrowed_context is True
+    assert proposal.file_count == 2
+
+
+@pytest.mark.asyncio
+async def test_cross_repo_version_ref_is_not_added_to_the_blob(tmp_path):
+    """It is not in this repo, so there is nothing to add and nothing to bump."""
+    (tmp_path / "check.py").write_text("TIMEOUT = 1\n")
+    (tmp_path / "values-overrides.yaml").write_text("airflow:\n  tag: 1.0.0\n")
+
+    gen = PatchGenerator(api_key="sk-test", model="claude-opus-4-7")
+    gen.client.messages.create = AsyncMock(return_value=SimpleNamespace(
+        content=[SimpleNamespace(type="text", text=SAMPLE_RESPONSE_TEXT)],
+        model="claude-opus-4-7",
+        usage=SimpleNamespace(input_tokens=1, output_tokens=1,
+                              cache_read_input_tokens=0,
+                              cache_creation_input_tokens=0),
+    ))
+
+    await gen.generate(
+        _make_ctx(), codebase_path=str(tmp_path),
+        investigation=_investigation(["check.py"]),
+        delivery=Delivery(mode="oci-chart", version_ref=VersionRef(
+            repo="acme/deployment", path="values-overrides.yaml", key="airflow.tag")),
+        github_repo="acme/charts",
+    )
+
+    blob = gen.client.messages.create.call_args.kwargs["messages"][0]["content"][0]["text"]
+    assert "values-overrides.yaml" not in blob
