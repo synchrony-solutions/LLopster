@@ -23,6 +23,7 @@ from src.agent.investigator import (
     Investigator,
     SYSTEM_PROMPT,
     _MAX_AFFECTED_FILES,
+    _format_user_blob,
     _parse_affected_files,
     _parse_confidence,
     _parse_reasoning,
@@ -31,6 +32,7 @@ from src.agent.investigator import (
 )
 from src.integrations.loki_client import LogLine
 from src.integrations.prometheus_client import MetricSample
+from src.services_registry import ChartLayer
 
 
 # ---------------------------------------------------------------------------
@@ -322,3 +324,53 @@ async def test_investigate_drops_hallucinated_paths_against_real_root(tmp_path):
 
     result = await inv.investigate(_make_ctx(), codebase_path=str(tmp_path))
     assert result.affected_files == ["real.yaml"]
+
+
+# ---------------------------------------------------------------------------
+# Chart lineage at the file-selection stage (#25 option C).
+#
+# This is where wrong-file selection happens: the system prompt forbids
+# inventing paths, so a model whose outline is missing the causal layer names
+# the closest-looking visible file instead — and that wrong path carries a
+# confidence score into synthesis.
+# ---------------------------------------------------------------------------
+
+LINEAGE = (
+    ChartLayer(name="resrv", version="2.5.0", repo="acme/charts"),
+    ChartLayer(name="airflow-tool", version="2.1.0", repo="acme/charts", visible=True),
+    ChartLayer(name="airflow", version="1.19.0", repo="apache/airflow"),
+)
+
+
+def test_no_lineage_leaves_the_prompt_untouched():
+    baseline = _format_user_blob(_make_ctx(), triage_reasoning=None)
+    assert baseline == _format_user_blob(
+        _make_ctx(), triage_reasoning=None, chart_lineage=(),
+    )
+    assert "Chart lineage" not in baseline
+
+
+def test_lineage_names_invisible_layers_and_offers_the_third_option():
+    text = _format_user_blob(_make_ctx(), triage_reasoning=None,
+                             chart_lineage=LINEAGE)
+    assert "Chart lineage" in text
+    assert "NOT in the outline below" in text
+    assert "`resrv`, `airflow` are NOT in it" in text
+    # The escape hatch that converts confident-wrong into honest abstention.
+    assert "return few or no affected files" in text
+
+
+def test_lineage_all_visible_skips_the_warning():
+    text = _format_user_blob(
+        _make_ctx(), triage_reasoning=None,
+        chart_lineage=(ChartLayer(name="solo", visible=True),),
+    )
+    assert "Every layer is covered by the outline" in text
+    assert "NOT in the outline below" not in text
+
+
+def test_lineage_precedes_triage_framing_and_incident_context():
+    text = _format_user_blob(_make_ctx(), triage_reasoning="worth a look",
+                             chart_lineage=LINEAGE)
+    assert text.index("Chart lineage") < text.index("Pre-flight triage framing")
+    assert text.index("Pre-flight triage framing") < text.index("# Incident context")

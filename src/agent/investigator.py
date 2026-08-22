@@ -48,6 +48,7 @@ from anthropic import AsyncAnthropic, BadRequestError
 
 from src.agent.context_collector import AlertContext
 from src.agent.prompts import STAGE_INVESTIGATION, PromptResolver
+from src.services_registry import ChartLayer
 
 log = logging.getLogger("llopster.investigator")
 
@@ -238,13 +239,68 @@ def _parse_reasoning(text: str) -> str:
 # Prompt builder
 # ---------------------------------------------------------------------------
 
+def _format_chart_lineage_outline(lineage: tuple[ChartLayer, ...]) -> list[str]:
+    """Tell the file-selection stage which chart layers it cannot see.
+
+    This is the stage the lineage matters most at. The system prompt correctly
+    forbids inventing paths, and the outline only covers one tree — so when the
+    real cause sits in an invisible layer, the model picks the closest-looking
+    file that IS in the outline. That wrong path then carries a confidence
+    score into synthesis, which is worse than an abstention.
+
+    Naming the missing layers gives it a third option: report that the cause is
+    outside the visible tree and return few or no affected files.
+    """
+    invisible = [layer.name for layer in lineage if not layer.visible]
+    out = [
+        "# Chart lineage",
+        "",
+        "This service is delivered by a chart-of-charts. Layers are listed "
+        "outermost first — an outer layer's values OVERRIDE an inner layer's:",
+        "",
+    ]
+    for i, layer in enumerate(lineage, start=1):
+        bits = [f"{i}. **{layer.name}**"]
+        if layer.version:
+            bits.append(f"v{layer.version}")
+        if layer.repo:
+            bits.append(f"(`{layer.repo}`)")
+        bits.append(
+            "— in the outline below" if layer.visible
+            else "— **NOT in the outline below**"
+        )
+        out.append(" ".join(bits))
+    out.append("")
+    if invisible:
+        out += [
+            "The outline you are given covers only the visible layer(s). "
+            + ", ".join(f"`{n}`" for n in invisible)
+            + " are NOT in it.",
+            "",
+            "If the most likely cause is a values key set in a layer you "
+            "cannot see, do NOT substitute the closest-looking file from the "
+            "outline. Say so in your root-cause hypothesis and return few or "
+            "no affected files — naming the layer a human should look in is "
+            "more useful than a confident wrong path.",
+        ]
+    else:
+        out += [
+            "Every layer is covered by the outline below.",
+        ]
+    return out
+
+
 def _format_user_blob(
     ctx: AlertContext,
     *,
     triage_reasoning: str | None,
+    chart_lineage: tuple[ChartLayer, ...] = (),
 ) -> str:
     a = ctx.alert
     lines: list[str] = []
+    if chart_lineage:
+        lines += _format_chart_lineage_outline(chart_lineage)
+        lines += [""]
     if triage_reasoning:
         lines += [
             "# Pre-flight triage framing",
@@ -348,10 +404,15 @@ class Investigator:
         codebase_path: str,
         triage_reasoning: str | None = None,
         stack: str | None = None,
+        chart_lineage: tuple[ChartLayer, ...] = (),
     ) -> Investigation:
         root = Path(codebase_path)
         outline = build_codebase_outline(root)
-        user_blob = _format_user_blob(ctx, triage_reasoning=triage_reasoning)
+        # Volatile half of the prompt — the outline above it carries the
+        # cache_control marker, so per-service framing must not go there.
+        user_blob = _format_user_blob(
+            ctx, triage_reasoning=triage_reasoning, chart_lineage=chart_lineage,
+        )
         valid_paths = _valid_paths(root)
         system_prompt = self._system_prompt(stack)
 
