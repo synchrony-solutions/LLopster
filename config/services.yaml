@@ -10,6 +10,52 @@
 #                   this service. Requires the pack to be mounted under
 #                   LLOPSTER_PACKS_DIR and entitled via LLOPSTER_PACK_TOKEN —
 #                   entitlement-gated. Absent = Community prompts (default).
+#
+#   delivery:       how a merged change in this repo actually reaches the
+#                   cluster. Absent = assumed to reconcile directly, which is
+#                   the behaviour LLopster has always had.
+#
+#     mode: git-manifest | oci-chart | image-build
+#       git-manifest  Flux/Argo applies these files directly — merging a PR
+#                     reconciles. Nothing changes about how patches are made.
+#       oci-chart     the chart is packaged and pushed to a registry. Editing
+#                     the chart source does NOT reach the cluster until the
+#                     package is rebuilt and the version reference bumped.
+#       image-build   CI builds an image; the tag has to be bumped.
+#
+#     version_ref:  (indirect modes only) where the version the cluster
+#                   consumes is declared, so the model can name it instead of
+#                   guessing. All three keys optional.
+#       repo: owner/repo
+#       path: path/to/values-overrides.yaml
+#       key:  dotted.values.path
+#
+#   chart_lineage:  the chart-of-charts this service is delivered by,
+#                   outermost first, and which layers the agent can see.
+#                   Declaring the INVISIBLE layers is the point: it lets the
+#                   model report "the cause is probably in a layer I cannot
+#                   see" rather than naming the closest-looking file in the one
+#                   tree it was given.
+#       - {name: <chart>, version: <ver>, repo: owner/repo, visible: true|false}
+#
+# Both blocks are optional and advisory. A malformed one logs a warning and is
+# dropped — the service itself keeps working.
+#
+# Example of a chart-of-charts service delivered via an OCI-packaged chart:
+#
+# subscription-airflow:
+#   codebase_path: /codebases/platform-charts/airflow-tool/helm
+#   github_repo: example-org/platform-charts
+#   delivery:
+#     mode: oci-chart
+#     version_ref:
+#       repo: example-org/platform-deployment
+#       path: clusters/prod/subscriptions/airflow/values-overrides.yaml
+#       key: airflow-tool.airflow.images.airflow.tag
+#   chart_lineage:
+#     - {name: resrv,        version: 2.5.0,  repo: example-org/platform-charts, visible: false}
+#     - {name: airflow-tool, version: 2.1.0,  repo: example-org/platform-charts, visible: true}
+#     - {name: airflow,      version: 1.19.0, repo: apache/airflow,              visible: false}
 demo-app:
   codebase_path: ./demo-app
   github_repo: synchrony-solutions/llopster-demo
