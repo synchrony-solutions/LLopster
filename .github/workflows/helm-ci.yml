@@ -1,17 +1,25 @@
 name: Helm chart CI
 
 # Lint the chart and smoke-install it on an ephemeral kind cluster on every PR
-# that touches the chart (and on pushes to main). This is the Phase-2 launch
+# (and on pushes to main that touch the chart). This is the Phase-2 launch
 # subset: lint + render + admission-validated install. Full readiness/e2e
 # (waiting for agent + dashboard pods to become Ready) depends on the published
 # container images and lands with the image build pipeline.
 
 on:
+  # Deliberately NOT path-filtered. `ct lint` and `kind install smoke` are
+  # required status checks in the ruleset on `main`, and a required check that
+  # never runs is never satisfied — GitHub leaves it "Expected — waiting for
+  # status to be reported" and the PR cannot merge, even with an approval.
+  #
+  # A path filter here therefore made every PR that did not touch the chart
+  # permanently unmergeable. It went unnoticed because each recent merged PR
+  # happened to touch `helm-chart/`; Dependabot's requirements.txt PRs did not,
+  # and sat blocked.
+  #
+  # If you re-add a filter, drop these two from the required set in the same
+  # change, or the trap comes straight back.
   pull_request:
-    paths:
-      - "helm-chart/**"
-      - "ct.yaml"
-      - ".github/workflows/helm-ci.yml"
   push:
     branches: [main]
     paths:
