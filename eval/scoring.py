@@ -13,6 +13,16 @@ team should be able to read exactly why a scenario passed or failed:
 
 `expect_patch: false` scenarios invert this (the right answer is to NOT patch),
 so the harness can also score noise-suppression once such scenarios exist.
+
+A scenario may also declare `max_confidence`. That covers a different failure
+than "wrong file": the patch cannot take effect from this repo at all — the
+chart is packaged and consumed at a pinned version, or the cause sits in a
+chart layer the agent was never shown. There the diff can be flawless and the
+run still useless, and EVERY existing gate passes it (it applies, it validates,
+it merges). What makes it harmful rather than merely unhelpful is the
+confidence score riding along, so exceeding the ceiling is graded `wrong` even
+when a patch is present and well-formed. Under the ceiling, the run is graded
+on whether it explained what actually needs to happen.
 """
 
 from __future__ import annotations
@@ -132,12 +142,36 @@ def score_run(scenario: Scenario, run: Run | None) -> ScenarioScore:
         else:
             label = "wrong"
             reason = f"no actionable patch (status={run.processing_status})"
-    else:
+    elif gt.max_confidence is None:
         # Noise-suppression scenario: the right answer is NOT to patch.
         if patch_proposed:
             label, reason = "wrong", "patched a scenario that should have been skipped"
         else:
             label, reason = "correct", "correctly produced no patch"
+    else:
+        # Undeliverable-fix scenario. A patch is acceptable *if* it is offered
+        # tentatively — the acceptance criterion is an honest confidence, not
+        # silence. Confidence above the ceiling is the failure, patch or not.
+        confidence = run.parsed_confidence
+        if confidence is not None and confidence > gt.max_confidence:
+            label = "wrong"
+            reason = (
+                f"confidence {confidence}/5 exceeds the {gt.max_confidence}/5 "
+                f"ceiling for a fix that cannot take effect from this repo"
+            )
+        elif gt.root_cause_keywords and not rc_match:
+            label = "partial"
+            reason = (
+                "suitably low confidence, but did not explain what actually "
+                "has to happen for the fix to reach the cluster"
+            )
+        else:
+            label = "correct"
+            reason = (
+                "flagged the fix as uncertain and explained what has to happen"
+                if patch_proposed
+                else "withheld a patch that could not have taken effect"
+            )
 
     return ScenarioScore(
         scenario_id=scenario.id,

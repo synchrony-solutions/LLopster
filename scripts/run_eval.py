@@ -49,8 +49,13 @@ log = logging.getLogger("llopster.eval")
 
 
 def _build_services(codebase_path: str) -> ServiceRegistry:
-    """All current scenarios are demo-app bugs; point that service at the
-    frozen in-repo codebase so synthesis sees the buggy source."""
+    """Default registry for the demo-app scenarios; point that service at the
+    frozen in-repo codebase so synthesis sees the buggy source.
+
+    Scenarios that declare their own `service:` block (those exercising an
+    operator declaration such as `delivery` or `chart_lineage`) override this
+    per replay — see eval/runner.replay_scenario.
+    """
     return ServiceRegistry.from_mapping(
         {
             "demo-app": ServiceConfig(

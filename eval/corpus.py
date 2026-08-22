@@ -24,10 +24,17 @@ and stable — the whole point of a regression baseline. The on-disk schema:
       metric_samples:
         - metric: {__name__: demo_app_db_pool_exhausted_total}
           value: 12
+    service:                     # optional; overrides the default registry
+      name: subscription-airflow
+      codebase_path: codebase    # relative paths resolve against this dir
+      github_repo: example-org/platform-charts
+      delivery: {mode: oci-chart, version_ref: {...}}
+      chart_lineage: [{name: ..., visible: false}, ...]
     ground_truth:
       expect_patch: true
       expected_files: [check_db_pool.py]
       root_cause_keywords: [pool, connection]
+      max_confidence: 2          # optional ceiling; see eval/scoring.py
 """
 
 from __future__ import annotations
@@ -41,6 +48,11 @@ import yaml
 from src.agent.alert_handler import ParsedAlert, parse_alertmanager_payload
 from src.integrations.loki_client import LogLine
 from src.integrations.prometheus_client import MetricSample
+from src.services_registry import (
+    ServiceConfig,
+    _parse_chart_lineage,
+    _parse_delivery,
+)
 
 log = logging.getLogger("llopster.eval.corpus")
 
@@ -55,6 +67,13 @@ class GroundTruth:
     expect_patch: bool
     expected_files: tuple[str, ...]
     root_cause_keywords: tuple[str, ...] = ()
+    # Optional ceiling on the synthesis confidence. For scenarios where the
+    # patch cannot take effect from this repo (an OCI-packaged chart, a cause
+    # in an invisible chart layer), the failure mode is not "patched" — it is
+    # "patched CONFIDENTLY". A high score on an undeliverable fix is what burns
+    # reviewer trust, so it is graded as wrong even when the diff looks right.
+    # None = no ceiling asserted (every pre-existing scenario).
+    max_confidence: int | None = None
 
 
 @dataclass
@@ -68,6 +87,11 @@ class Scenario:
     log_lines: list[LogLine]
     metric_samples: list[MetricSample]
     ground_truth: GroundTruth
+    # Optional per-scenario service config. The default corpus is all demo-app
+    # bugs served by one registry entry, but a scenario that exercises an
+    # operator declaration (`delivery`, `chart_lineage`) has to carry its own —
+    # the declaration IS the thing under test.
+    service: ServiceConfig | None = None
 
 
 def _parse_log_lines(raw: list[dict], at) -> list[LogLine]:
@@ -121,11 +145,15 @@ def load_scenario(path: Path) -> Scenario:
     gt = data.get("ground_truth") or {}
     # YAML coerces bare tokens like 512 / 0.001 to numbers — keep the answer
     # key as strings so substring matching against diff/root-cause text works.
+    max_confidence = gt.get("max_confidence")
     ground_truth = GroundTruth(
         expect_patch=bool(gt.get("expect_patch", True)),
         expected_files=tuple(str(f) for f in (gt.get("expected_files", []) or ())),
         root_cause_keywords=tuple(str(k) for k in (gt.get("root_cause_keywords", []) or ())),
+        max_confidence=int(max_confidence) if max_confidence is not None else None,
     )
+
+    service = _parse_service(data.get("service"), scenario_dir=path.parent)
 
     return Scenario(
         id=str(data.get("id") or path.parent.name),
@@ -135,6 +163,7 @@ def load_scenario(path: Path) -> Scenario:
         log_lines=log_lines,
         metric_samples=metric_samples,
         ground_truth=ground_truth,
+        service=service,
     )
 
 
@@ -162,3 +191,41 @@ def corpus_version(scenarios: list[Scenario]) -> str:
     ids = ",".join(sorted(s.id for s in scenarios))
     digest = hashlib.sha256(ids.encode()).hexdigest()[:8]
     return f"{len(scenarios)}:{digest}"
+
+
+def _parse_service(raw: object, *, scenario_dir: Path) -> ServiceConfig | None:
+    """Parse a scenario's optional `service` block into a ServiceConfig.
+
+    Reuses the registry's own `delivery` / `chart_lineage` parsers rather than
+    reimplementing them, so the corpus cannot drift from what production
+    accepts — a scenario that parses here parses identically in services.yaml.
+
+    `codebase_path` resolves relative to the scenario directory, keeping each
+    scenario self-contained (fixture tree next to the scenario.yaml that
+    describes it). Absolute paths pass through untouched.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError(f"{scenario_dir}: 'service' must be a mapping")
+
+    name = raw.get("name")
+    codebase_path = raw.get("codebase_path")
+    github_repo = raw.get("github_repo")
+    if not name or not codebase_path or not github_repo:
+        raise ValueError(
+            f"{scenario_dir}: 'service' needs name, codebase_path and github_repo"
+        )
+
+    resolved = Path(str(codebase_path))
+    if not resolved.is_absolute():
+        resolved = (scenario_dir / resolved).resolve()
+
+    return ServiceConfig(
+        name=str(name),
+        codebase_path=str(resolved),
+        github_repo=str(github_repo),
+        pack=str(raw["pack"]) if raw.get("pack") else None,
+        delivery=_parse_delivery(str(name), raw.get("delivery")),
+        chart_lineage=_parse_chart_lineage(str(name), raw.get("chart_lineage")),
+    )
