@@ -11,6 +11,8 @@ from eval.corpus import (
     corpus_version,
     load_corpus,
     load_scenario,
+    select_scenarios,
+    UnknownScenarioError,
 )
 
 # The five seeded demo-app bugs we froze as the regression baseline.
@@ -125,3 +127,66 @@ def test_malformed_scenario_raises(tmp_path):
 def test_default_scenarios_dir_exists():
     assert DEFAULT_SCENARIOS_DIR.exists()
     assert (DEFAULT_SCENARIOS_DIR).is_dir()
+
+
+# ---------------------------------------------------------------------------
+# select_scenarios — the --scenario-id filter.
+#
+# Every replay costs live tokens, so narrowing the run matters while iterating.
+# The failure to avoid is a typo'd id quietly selecting nothing: a clean run
+# over zero scenarios reads exactly like a pass.
+# ---------------------------------------------------------------------------
+
+def test_no_ids_returns_the_whole_corpus():
+    corpus = load_corpus()
+    assert select_scenarios(corpus, None) == corpus
+    assert select_scenarios(corpus, []) == corpus
+
+
+def test_selects_a_single_scenario():
+    selected = select_scenarios(load_corpus(), ["oci-chart-undeliverable-patch"])
+    assert [s.id for s in selected] == ["oci-chart-undeliverable-patch"]
+
+
+def test_repeated_flags_and_comma_separated_are_equivalent():
+    corpus = load_corpus()
+    ids = ["oci-chart-undeliverable-patch", "invisible-chart-layer-override"]
+    assert (
+        [s.id for s in select_scenarios(corpus, ids)]
+        == [s.id for s in select_scenarios(corpus, [",".join(ids)])]
+    )
+
+
+def test_selection_preserves_corpus_order_not_argument_order():
+    """Stable ordering keeps two runs of the same set comparable."""
+    corpus = load_corpus()
+    selected = select_scenarios(
+        corpus, ["oci-chart-undeliverable-patch,db-pool-exhausted"],
+    )
+    assert [s.id for s in selected] == [
+        s.id for s in corpus if s.id in {
+            "oci-chart-undeliverable-patch", "db-pool-exhausted",
+        }
+    ]
+
+
+def test_unknown_id_raises_and_names_the_alternatives():
+    with pytest.raises(UnknownScenarioError) as excinfo:
+        select_scenarios(load_corpus(), ["db-pool-exhuasted"])   # typo
+    message = str(excinfo.value)
+    assert "db-pool-exhuasted" in message
+    assert "db-pool-exhausted" in message   # the real id is offered
+
+
+def test_one_bad_id_among_good_ones_still_raises():
+    with pytest.raises(UnknownScenarioError):
+        select_scenarios(load_corpus(), ["db-pool-exhausted", "nope"])
+
+
+def test_filtered_corpus_version_differs_from_the_full_one():
+    """corpus_version is derived from the ids present, so a filtered run cannot
+    masquerade as a full-corpus result if one is ever recorded."""
+    corpus = load_corpus()
+    subset = select_scenarios(corpus, ["oci-chart-undeliverable-patch"])
+    assert corpus_version(subset) != corpus_version(corpus)
+    assert corpus_version(subset).startswith("1:")

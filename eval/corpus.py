@@ -229,3 +229,45 @@ def _parse_service(raw: object, *, scenario_dir: Path) -> ServiceConfig | None:
         delivery=_parse_delivery(str(name), raw.get("delivery")),
         chart_lineage=_parse_chart_lineage(str(name), raw.get("chart_lineage")),
     )
+
+
+class UnknownScenarioError(ValueError):
+    """A requested scenario id is not in the corpus.
+
+    Raised rather than silently skipping: a typo'd id that quietly selected
+    nothing would report a clean run over zero scenarios, which reads exactly
+    like a pass.
+    """
+
+
+def select_scenarios(
+    scenarios: list[Scenario], ids: list[str] | None,
+) -> list[Scenario]:
+    """Filter a loaded corpus down to the requested ids, preserving order.
+
+    `ids` entries may be comma-separated, so both of these select the same two:
+
+        --scenario-id a --scenario-id b
+        --scenario-id a,b
+
+    `None` or an empty selection returns the corpus untouched.
+    """
+    if not ids:
+        return scenarios
+
+    wanted: list[str] = []
+    for entry in ids:
+        wanted.extend(part.strip() for part in str(entry).split(",") if part.strip())
+    if not wanted:
+        return scenarios
+
+    available = {s.id for s in scenarios}
+    unknown = [w for w in wanted if w not in available]
+    if unknown:
+        raise UnknownScenarioError(
+            f"unknown scenario id(s): {', '.join(sorted(unknown))}. "
+            f"Available: {', '.join(sorted(available))}"
+        )
+
+    selected = set(wanted)
+    return [s for s in scenarios if s.id in selected]
