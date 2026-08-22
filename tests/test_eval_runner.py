@@ -152,3 +152,139 @@ async def test_replay_partial_when_wrong_file(sessionmaker_fixture):
         investigator=_investigator_mock([]),
     )
     assert score_run(scenario, run).label == "partial"
+
+
+# ---------------------------------------------------------------------------
+# Scenario-declared service configs (#24 part B, #25 option C).
+#
+# These scenarios carry their own service block because the declaration is the
+# thing under test. The replay must use it, the declaration must reach the
+# synthesis prompt, and the grader must catch a confident answer.
+# ---------------------------------------------------------------------------
+
+def _scenario_by_id(scenario_id: str):
+    return next(s for s in load_corpus() if s.id == scenario_id)
+
+
+def _proposal(text: str, confidence: int) -> PatchProposal:
+    return PatchProposal(
+        text=text, model="claude-opus-4-7", input_tokens=10, output_tokens=10,
+        cache_read_tokens=0, cache_creation_tokens=0, confidence=confidence,
+        confidence_reason="r", used_narrowed_context=False, file_count=1,
+    )
+
+
+@pytest.mark.asyncio
+async def test_oci_scenario_declaration_reaches_the_synthesis_prompt(
+    sessionmaker_fixture,
+):
+    """The scenario's own service config must override the caller's registry,
+    and the delivery constraint must land in the prompt Opus actually sees."""
+    scenario = _scenario_by_id("oci-chart-undeliverable-patch")
+
+    patcher = MagicMock()
+    patcher.generate = AsyncMock(return_value=_proposal(
+        "## Root Cause\nProbe timeout too low; needs a chart repackage.\n"
+        "\n## Confidence\n2/5 — cannot reconcile from this repo\n", 2,
+    ))
+
+    await replay_scenario(
+        scenario,
+        sessionmaker=sessionmaker_fixture,
+        services=_services(),          # deliberately WRONG registry
+        patcher=patcher,
+        triage=None,
+        investigator=None,
+    )
+
+    kwargs = patcher.generate.call_args.kwargs
+    assert kwargs["github_repo"] == "example-org/platform-charts"
+    assert kwargs["delivery"].mode == "oci-chart"
+    assert kwargs["delivery"].is_indirect is True
+    # Cross-repo version ref — the prompt must ask for an explanation, not a
+    # patch the pipeline could never open.
+    assert kwargs["delivery"].version_ref.repo == "example-org/platform-deployment"
+    assert [layer.visible for layer in kwargs["chart_lineage"]] == [False, True, False]
+    assert scenario.service.codebase_path.endswith("codebase")
+
+
+@pytest.mark.asyncio
+async def test_confident_patch_on_the_oci_scenario_is_graded_wrong(
+    sessionmaker_fixture,
+):
+    """The regression this corpus entry exists to catch: a clean, confident
+    diff against a chart that cannot reconcile from this repo."""
+    scenario = _scenario_by_id("oci-chart-undeliverable-patch")
+
+    patcher = MagicMock()
+    patcher.generate = AsyncMock(return_value=_proposal(
+        "## Root Cause\nLiveness probe timeout is too tight.\n\n"
+        "## Proposed Patch\n```diff\n"
+        "--- a/values.yaml\n+++ b/values.yaml\n@@ -4,1 +4,1 @@\n"
+        "-    livenessProbeTimeoutSeconds: 1\n+    livenessProbeTimeoutSeconds: 10\n"
+        "```\n\n## Confidence\n5/5 — unambiguous\n", 5,
+    ))
+
+    run = await replay_scenario(
+        scenario, sessionmaker=sessionmaker_fixture, services=_services(),
+        patcher=patcher, triage=None, investigator=None,
+    )
+    score = score_run(scenario, run)
+    assert score.label == "wrong"
+    assert "exceeds the 2/5 ceiling" in score.reason
+
+
+@pytest.mark.asyncio
+async def test_honest_low_confidence_on_the_oci_scenario_passes(
+    sessionmaker_fixture,
+):
+    scenario = _scenario_by_id("oci-chart-undeliverable-patch")
+
+    patcher = MagicMock()
+    patcher.generate = AsyncMock(return_value=_proposal(
+        "## Root Cause\nThe probe timeout in values.yaml is too tight, but this "
+        "chart is consumed as an OCI package pinned in platform-deployment — a "
+        "source edit here needs a repackage and a version bump to take effect.\n"
+        "\n## Confidence\n2/5 — cannot be delivered from this repository\n", 2,
+    ))
+
+    run = await replay_scenario(
+        scenario, sessionmaker=sessionmaker_fixture, services=_services(),
+        patcher=patcher, triage=None, investigator=None,
+    )
+    assert score_run(scenario, run).label == "correct"
+
+
+@pytest.mark.asyncio
+async def test_lineage_scenario_forwards_invisible_layers_to_both_stages(
+    sessionmaker_fixture,
+):
+    """The lineage has to reach the investigator too — wrong-FILE selection
+    happens there, before synthesis ever sees the code."""
+    scenario = _scenario_by_id("invisible-chart-layer-override")
+
+    investigator = MagicMock()
+    investigator.investigate = AsyncMock(return_value=Investigation(
+        root_cause="memory limit is overridden by the parent chart resrv",
+        affected_files=[], confidence=2, reasoning="r", response_text="t",
+        model="claude-sonnet-4-5", input_tokens=1, output_tokens=1,
+        cache_read_tokens=0, cache_creation_tokens=0,
+    ))
+    patcher = MagicMock()
+    patcher.generate = AsyncMock(return_value=_proposal(
+        "## Root Cause\nOverridden by parent chart resrv, which is not visible.\n"
+        "\n## Confidence\n1/5 — the causal layer was not provided\n", 1,
+    ))
+
+    run = await replay_scenario(
+        scenario, sessionmaker=sessionmaker_fixture, services=_services(),
+        patcher=patcher, triage=None, investigator=investigator,
+    )
+
+    inv_lineage = investigator.investigate.call_args.kwargs["chart_lineage"]
+    assert [(l.name, l.visible) for l in inv_lineage] == [
+        ("resrv", False), ("airflow-tool", True),
+    ]
+    # Delivery is direct here, so a pass cannot be credited to that feature.
+    assert patcher.generate.call_args.kwargs["delivery"].is_indirect is False
+    assert score_run(scenario, run).label == "correct"

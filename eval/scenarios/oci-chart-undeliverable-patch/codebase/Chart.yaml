@@ -1,0 +1,5 @@
+apiVersion: v2
+name: airflow-tool
+description: Airflow subchart, packaged and pushed to an OCI registry.
+type: application
+version: 2.1.0
