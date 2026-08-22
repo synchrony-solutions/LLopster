@@ -1,5 +1,5 @@
 fastapi==0.141.1
-uvicorn[standard]==0.52.1
+uvicorn[standard]==0.52.3
 python-dotenv==1.2.2
 python-multipart==0.0.32
 alembic>=1.19.1
@@ -8,13 +8,13 @@ httpx==0.28.1
 # (LLM_PROVIDER=bedrock). One image serves every provider/tier, so the AWS
 # deps are always installed; the direct Anthropic API path doesn't import
 # them. boto3/botocore are pinned explicitly below for reproducible builds.
-anthropic[bedrock]==0.121.0
-boto3==1.43.67
-botocore==1.43.67
+anthropic[bedrock]==0.122.0
+boto3==1.43.71
+botocore==1.43.71
 PyJWT==2.13.0
 cryptography==50.0.0
 pyyaml==6.0.3
-sqlalchemy[asyncio]==2.0.51
+sqlalchemy[asyncio]==2.0.52
 aiosqlite==0.22.1
 asyncpg==0.31.0
 psycopg2-binary==2.9.12
