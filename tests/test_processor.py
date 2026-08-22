@@ -17,7 +17,8 @@ from src.agent.cost_breaker import BreakerDecision
 from src.agent.investigator import Investigation
 from src.agent.patch_generator import PatchProposal
 from src.agent.processing_mode import MANUAL, get_processing_mode
-from src.agent.processor import process_alert
+from src.agent.processor import _same_repo_version_ref_path, process_alert
+from src.services_registry import Delivery, ServiceConfig, VersionRef
 from src.agent.triage import TriageDecision
 from src.db import repository as repo
 from src.db.models import Base
@@ -907,3 +908,57 @@ async def test_failure_in_patch_generation_marks_failed(sessionmaker_fixture):
         fetched = await repo.get_run(s, run.id)
     assert fetched.processing_status == "failed"
     assert "anthropic 500" in fetched.error_message
+
+
+# ---------------------------------------------------------------------------
+# Version-reference allowlist widening (#24 part B).
+#
+# When an indirect delivery mode points at a version reference in THIS repo,
+# the synthesis prompt requires the bump in the same diff. The investigator
+# never saw that file — it is a deploy-side value, not a code path — so the
+# affected_files allowlist would refuse the exact patch we asked for.
+# ---------------------------------------------------------------------------
+
+def _svc(delivery=None, github_repo="acme/platform-charts"):
+    return ServiceConfig(
+        name="airflow", codebase_path="/codebases/platform-charts",
+        github_repo=github_repo, delivery=delivery,
+    )
+
+
+def _oci(repo, path="clusters/prod/values.yaml"):
+    return Delivery(
+        mode="oci-chart", version_ref=VersionRef(repo=repo, path=path, key="a.b"),
+    )
+
+
+def test_version_ref_path_returned_when_in_the_target_repo():
+    svc = _svc(_oci("acme/platform-charts"))
+    assert _same_repo_version_ref_path(svc) == "clusters/prod/values.yaml"
+
+
+def test_version_ref_path_none_for_a_different_repo():
+    """A PR spans one repo — the prompt asks for an explanation, not a patch,
+    so nothing should be added to the allowlist."""
+    assert _same_repo_version_ref_path(_svc(_oci("acme/platform-deployment"))) is None
+
+
+def test_version_ref_path_none_without_a_delivery_block():
+    assert _same_repo_version_ref_path(_svc()) is None
+
+
+def test_version_ref_path_none_for_direct_delivery():
+    assert _same_repo_version_ref_path(_svc(Delivery(mode="git-manifest"))) is None
+
+
+def test_version_ref_path_none_when_path_or_repo_unknown():
+    assert _same_repo_version_ref_path(_svc(_oci(None))) is None
+    assert _same_repo_version_ref_path(_svc(_oci("acme/platform-charts", None))) is None
+
+
+def test_widening_adds_exactly_one_path():
+    """The allowlist must grow by the declared path and nothing else."""
+    svc = _svc(_oci("acme/platform-charts"))
+    allowed = {"airflow-tool/helm/values.yaml"}
+    widened = allowed | {_same_repo_version_ref_path(svc)}
+    assert widened == {"airflow-tool/helm/values.yaml", "clusters/prod/values.yaml"}

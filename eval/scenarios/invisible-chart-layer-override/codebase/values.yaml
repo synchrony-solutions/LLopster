@@ -1,0 +1,12 @@
+airflow:
+  workers:
+    replicas: 3
+    resources:
+      requests:
+        memory: 2Gi
+      limits:
+        # This looks like the cause of the OOMKills — and it is NOT what the
+        # cluster is running. The parent chart's environment values set this
+        # key too, and a parent's values win. Patching it here is a clean diff
+        # with no effect.
+        memory: 4Gi

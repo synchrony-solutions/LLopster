@@ -1,0 +1,75 @@
+id: invisible-chart-layer-override
+description: >-
+  Airflow workers are being OOMKilled. The visible tool chart sets a memory
+  limit of 4Gi in values.yaml, which looks like the answer — but the cluster is
+  running 1Gi, because the parent chart `resrv` sets the same key in an
+  environment values file, and a parent chart's values override a subchart's.
+  The parent is not in the codebase the agent was given.
+
+  Patching the visible 4Gi produces a clean diff, a passing validator, a merged
+  PR, and workers that keep dying. Nothing in the pipeline can detect that —
+  precedence is invisible to the model unless the lineage is declared. The pass
+  condition is naming the invisible layer, not patching the nearest visible
+  file to have something to propose.
+
+service:
+  name: subscription-airflow
+  codebase_path: codebase
+  github_repo: example-org/platform-charts
+  # Delivery is direct here on purpose: this scenario isolates the lineage
+  # signal from the delivery-mode signal, so a pass cannot be credited to the
+  # wrong feature.
+  delivery:
+    mode: git-manifest
+  chart_lineage:
+    - {name: resrv,        version: "2.5.0", repo: example-org/platform-charts, visible: false}
+    - {name: airflow-tool, version: "2.1.0", repo: example-org/platform-charts, visible: true}
+
+alert:
+  version: "4"
+  status: firing
+  receiver: agent-webhook
+  groupLabels:
+    alertname: AirflowWorkerOOMKilled
+  alerts:
+    - status: firing
+      labels:
+        alertname: AirflowWorkerOOMKilled
+        severity: critical
+        service: subscription-airflow
+        namespace: airflow
+        pod: airflow-worker-7f9c5d84b-lm2qt
+        container: worker
+      annotations:
+        summary: airflow workers OOMKilled repeatedly
+        description: >-
+          Three airflow-worker pods have been OOMKilled in the last 20 minutes.
+          Container memory usage reaches the configured limit and the kernel
+          reaps the process mid-task.
+      startsAt: "2026-08-20T14:03:00.000Z"
+      endsAt: "0001-01-01T00:00:00Z"
+      generatorURL: "http://localhost:9090/graph?g0.expr=increase%28kube_pod_container_status_last_terminated_reason%7Breason%3D%22OOMKilled%22%7D%5B20m%5D%29%20%3E%202&g0.tab=1"
+      fingerprint: airflow03worker04oom
+
+recorded_context:
+  log_lines:
+    - line: "ERROR airflow.executors.celery_executor: Task exited with return code Negsignal.SIGKILL"
+      labels: {service: subscription-airflow, container: worker, level: error}
+    - line: "WARNING airflow.task: Task instance memory high-water mark 1018Mi approaching container limit"
+      labels: {service: subscription-airflow, container: worker, level: warning}
+    - line: "ERROR airflow.executors.celery_executor: Task exited with return code Negsignal.SIGKILL"
+      labels: {service: subscription-airflow, container: worker, level: error}
+  metric_samples:
+    # The effective limit the cluster is enforcing — 1Gi, NOT the 4Gi that is
+    # visible in the tool chart's values.yaml. The gap between these two numbers
+    # is the entire scenario.
+    - metric: {__name__: kube_pod_container_resource_limits, resource: memory, container: worker}
+      value: 1073741824
+    - metric: {__name__: container_memory_working_set_bytes, container: worker}
+      value: 1070000000
+
+ground_truth:
+  expect_patch: false
+  max_confidence: 2
+  expected_files: [values.yaml]
+  root_cause_keywords: [resrv, parent chart, override, overridden, precedence, not visible, cannot see]

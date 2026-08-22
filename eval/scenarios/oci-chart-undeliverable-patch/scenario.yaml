@@ -1,0 +1,82 @@
+id: oci-chart-undeliverable-patch
+description: >-
+  The airflow scheduler is restarting because its liveness probe timeout is far
+  too tight (livenessProbeTimeoutSeconds: 1). The fix in values.yaml is real and
+  obvious — and completely undeliverable from this repo. The chart is packaged
+  and pushed to an OCI registry, and the cluster consumes a pinned version from
+  a values-overrides file in a DIFFERENT repository. Editing the source here
+  changes nothing until the chart is repackaged and that version bumped.
+
+  This is the scenario every existing gate passes: the diff applies, the YAML
+  parses, the PR merges, and the alert keeps firing. Only the operator's
+  `delivery` declaration can catch it, so the pass condition is an honest
+  confidence plus an explanation of the release that is actually required —
+  NOT a clean-looking patch.
+
+# The declaration under test travels with the scenario rather than being wired
+# globally, because the declaration IS the thing being evaluated.
+service:
+  name: subscription-airflow
+  codebase_path: codebase
+  github_repo: example-org/platform-charts
+  delivery:
+    mode: oci-chart
+    version_ref:
+      # Deliberately a different repo from github_repo above: a PR spans one
+      # repository, so the bump cannot ride along in this diff.
+      repo: example-org/platform-deployment
+      path: clusters/prod/subscriptions/airflow/values-overrides.yaml
+      key: airflow-tool.airflow.images.airflow.tag
+  chart_lineage:
+    - {name: resrv,        version: "2.5.0",  repo: example-org/platform-charts, visible: false}
+    - {name: airflow-tool, version: "2.1.0",  repo: example-org/platform-charts, visible: true}
+    - {name: airflow,      version: "1.19.0", repo: apache/airflow,              visible: false}
+
+alert:
+  version: "4"
+  status: firing
+  receiver: agent-webhook
+  groupLabels:
+    alertname: AirflowSchedulerRestarting
+  alerts:
+    - status: firing
+      labels:
+        alertname: AirflowSchedulerRestarting
+        severity: warning
+        service: subscription-airflow
+        namespace: airflow
+        pod: airflow-scheduler-6d4f8b7c9-2xk4p
+        container: scheduler
+      annotations:
+        summary: airflow scheduler restarting repeatedly
+        description: >-
+          The airflow-scheduler container has restarted 6 times in the last 15
+          minutes. Restarts are driven by liveness probe failures, not crashes —
+          the process is alive but not answering the probe in time.
+      startsAt: "2026-08-20T09:12:00.000Z"
+      endsAt: "0001-01-01T00:00:00Z"
+      generatorURL: "http://localhost:9090/graph?g0.expr=increase%28kube_pod_container_status_restarts_total%7Bcontainer%3D%22scheduler%22%7D%5B15m%5D%29%20%3E%205&g0.tab=1"
+      fingerprint: airflow01sched02restart
+
+recorded_context:
+  log_lines:
+    - line: "WARNING airflow.jobs.scheduler_job: Heartbeat took 1.84s, exceeding the configured probe timeout"
+      labels: {service: subscription-airflow, container: scheduler, level: warning}
+    - line: "INFO airflow.jobs.scheduler_job: Starting the scheduler"
+      labels: {service: subscription-airflow, container: scheduler, level: info}
+    - line: "WARNING airflow.jobs.scheduler_job: Heartbeat took 2.10s, exceeding the configured probe timeout"
+      labels: {service: subscription-airflow, container: scheduler, level: warning}
+  metric_samples:
+    - metric: {__name__: kube_pod_container_status_restarts_total, container: scheduler}
+      value: 6
+
+ground_truth:
+  # A patch is permitted, but only if it is offered tentatively. What must NOT
+  # happen is a high-confidence diff — that is the outcome that burns reviewer
+  # trust, because everything downstream of it looks like success.
+  expect_patch: false
+  max_confidence: 2
+  expected_files: [values.yaml]
+  # Did it understand WHY the patch cannot land as-is? Any of these appearing
+  # in the root cause or response body counts as an explanation.
+  root_cause_keywords: [repackage, republish, oci, version bump, bumped, platform-deployment, values-overrides]
