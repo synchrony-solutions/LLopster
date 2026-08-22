@@ -356,6 +356,7 @@ async def process_alert(
                     codebase_path=service_cfg.codebase_path,
                     triage_reasoning=triage_reasoning_for_investigation,
                     stack=stack,
+                    chart_lineage=service_cfg.chart_lineage,
                 )
                 inv_latency_ms = int((time.monotonic() - t_inv) * 1000)
             except Exception as e:
@@ -386,6 +387,9 @@ async def process_alert(
             previous_attempt=previous_attempt,
             investigation=investigation_for_synthesis,
             stack=stack,
+            delivery=service_cfg.delivery,
+            chart_lineage=service_cfg.chart_lineage,
+            github_repo=service_cfg.github_repo,
         )
         latency_ms = int((time.monotonic() - t0) * 1000)
         log.info(
@@ -432,6 +436,15 @@ async def process_alert(
                     and investigation_for_synthesis.affected_files
                     else None
                 )
+                # When an indirect delivery mode points at a version reference
+                # in THIS repo, the synthesis prompt requires the bump in the
+                # same diff. The investigator never saw that file (it is a
+                # deploy-side value, not a code path), so the allowlist would
+                # refuse the very patch we asked for. Widen it by exactly that
+                # one declared path — no wider.
+                version_ref_path = _same_repo_version_ref_path(service_cfg)
+                if allowed_paths is not None and version_ref_path:
+                    allowed_paths = allowed_paths | {version_ref_path}
                 pr = await github.open_pr(
                     alert, proposal, repo=service_cfg.github_repo,
                     draft=open_prs_as_draft, allowed_paths=allowed_paths,
@@ -515,3 +528,23 @@ def alert_to_payload(alert: ParsedAlert) -> dict[str, Any]:
         "annotations": alert.annotations,
         "generator_url": alert.generator_url,
     }
+
+
+def _same_repo_version_ref_path(service_cfg) -> str | None:
+    """The declared version-reference path, when it lives in the repo this
+    service's PRs target and the delivery mode makes it required.
+
+    Returns None whenever the bump is not something synthesis was asked to
+    include — no delivery block, a directly-reconciling mode, no declared
+    path, or a reference in another repo (a PR spans one repo, so the prompt
+    asks for an explanation instead of a patch in that case).
+    """
+    delivery = getattr(service_cfg, "delivery", None)
+    if delivery is None or not delivery.is_indirect:
+        return None
+    ref = delivery.version_ref
+    if ref is None or not ref.path or not ref.repo:
+        return None
+    if ref.repo != service_cfg.github_repo:
+        return None
+    return ref.path

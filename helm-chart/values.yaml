@@ -704,11 +704,42 @@ agent:
   #
   # Empty by default. Customer installs add their services here.
   servicesConfig: {}
+  # Every key in an entry is passed through to services.yaml verbatim, so any
+  # field the registry understands can be set here.
+  #
   # Example:
   # servicesConfig:
   #   payments-api:
   #     codebase_path: /codebases/payments-api
   #     github_repo: my-org/payments-api
+  #
+  # Optional per-service blocks (see config/services.yaml for the full schema):
+  #
+  #   delivery       how a merged change actually reaches the cluster. Absent =
+  #                  assumed to reconcile directly (today's behaviour). Under
+  #                  `oci-chart`/`image-build` a source-only patch does NOT take
+  #                  effect until the package is rebuilt and the version bumped,
+  #                  and the synthesis prompt is told to say so instead of
+  #                  proposing a confident patch that will never reconcile.
+  #   chart_lineage  the chart-of-charts this service is delivered by, and which
+  #                  layers the agent can actually see. Declaring the invisible
+  #                  ones lets the model abstain instead of naming the closest
+  #                  visible file.
+  #
+  # servicesConfig:
+  #   subscription-airflow:
+  #     codebase_path: /codebases/platform-charts/airflow-tool/helm
+  #     github_repo: example-org/platform-charts
+  #     delivery:
+  #       mode: oci-chart
+  #       version_ref:
+  #         repo: example-org/platform-deployment
+  #         path: clusters/prod/subscriptions/airflow/values-overrides.yaml
+  #         key: airflow-tool.airflow.images.airflow.tag
+  #     chart_lineage:
+  #       - {name: resrv,        version: "2.5.0",  repo: example-org/platform-charts, visible: false}
+  #       - {name: airflow-tool, version: "2.1.0",  repo: example-org/platform-charts, visible: true}
+  #       - {name: airflow,      version: "1.19.0", repo: apache/airflow,              visible: false}
 
   # Init-container codebase clones — populates /codebases/<name> before
   # the agent starts. Each entry: name (matches servicesConfig key), the repo
