@@ -134,10 +134,18 @@ metadata:
     app.kubernetes.io/component: agent
 data:
   services.yaml: |
+    {{- /*
+      Render each entry wholesale rather than enumerating known keys. The
+      registry (src/services_registry.py) accepts optional per-service blocks
+      — `pack`, `delivery`, `chart_lineage` — and a field-by-field template
+      silently DROPS every one of them, so a values file that looks correct
+      produces a services.yaml missing the declaration. `toYaml` passes
+      through whatever the operator declared; the registry validates it and
+      warns on anything malformed.
+    */}}
     {{- range $name, $cfg := .Values.agent.servicesConfig }}
     {{ $name }}:
-      codebase_path: {{ $cfg.codebase_path | quote }}
-      github_repo: {{ $cfg.github_repo | quote }}
+      {{- toYaml $cfg | nindent 6 }}
     {{- end }}
 ---
 apiVersion: apps/v1
