@@ -16,21 +16,54 @@ default) the chart must render no RBAC for the agent at all, and no
 ServiceAccount token into the agent pod.
 
 Usage: scripts/check_cluster_rbac.py [chart-dir]
-Requires `helm` on PATH. Exits non-zero on any violation.
+
+Requires `helm` on PATH *and* the chart's subchart tarballs fetched
+(`helm dependency build`) — helm resolves dependencies before it evaluates
+their conditions, so even a `--show-only` render of one template fails without
+them. Exit codes: 0 pass, 1 violation, 2 cannot run (see EXIT_CANNOT_RUN).
 """
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 import yaml
 
+# Distinguished from a violation (1) so callers can tell "this check found a
+# problem" from "this check could not run". CI must treat both as failure —
+# there the dependencies ARE built, so 2 means the workflow is broken — but the
+# pytest wrapper skips on 2, because a developer's working tree legitimately
+# has no tarballs (they are gitignored and fetched by bootstrap-helm.sh).
+EXIT_CANNOT_RUN = 2
+
 ALLOWED_VERBS = {"get", "list", "watch"}
 FORBIDDEN_RESOURCES = {"secrets"}
 
 RBAC_KINDS = {"ClusterRole", "Role", "ClusterRoleBinding", "RoleBinding"}
+
+
+def missing_dependencies(chart_dir: str) -> list[str]:
+    """Declared subcharts with no tarball in charts/.
+
+    Checked structurally rather than by matching helm's error text: the message
+    is not an API, and a silent skip on a changed wording would turn this gate
+    off without anyone noticing.
+    """
+    chart_yaml = yaml.safe_load(Path(chart_dir, "Chart.yaml").read_text()) or {}
+    declared = [
+        d.get("name")
+        for d in (chart_yaml.get("dependencies") or [])
+        if isinstance(d, dict) and d.get("name")
+    ]
+    present = {p.name for p in Path(chart_dir, "charts").glob("*.tgz")}
+    return [
+        name
+        for name in declared
+        if not any(p.startswith(f"{name}-") for p in present)
+    ]
 
 
 def render(chart_dir: str, *sets: str, show_only: str | None = None) -> list[dict]:
@@ -85,6 +118,21 @@ def main() -> int:
     chart_dir = sys.argv[1] if len(sys.argv) > 1 else "helm-chart"
     if not Path(chart_dir, "Chart.yaml").exists():
         raise SystemExit(f"no chart at {chart_dir}")
+
+    if shutil.which("helm") is None:
+        print("cannot run: helm is not on PATH", file=sys.stderr)
+        return EXIT_CANNOT_RUN
+    missing = missing_dependencies(chart_dir)
+    if missing:
+        print(
+            f"cannot run: subchart tarball(s) missing for {', '.join(missing)}. "
+            f"helm resolves dependencies before evaluating their conditions, so "
+            f"even a --show-only render needs them. Run: "
+            f"helm dependency build {chart_dir}",
+            file=sys.stderr,
+        )
+        return EXIT_CANNOT_RUN
+
     failures: list[str] = []
 
     # 1. Namespace-scoped: ClusterRole + one RoleBinding per namespace.
