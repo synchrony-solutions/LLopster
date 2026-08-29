@@ -731,3 +731,54 @@ async def test_cross_repo_version_ref_is_not_added_to_the_blob(tmp_path):
 
     blob = gen.client.messages.create.call_args.kwargs["messages"][0]["content"][0]["text"]
     assert "values-overrides.yaml" not in blob
+
+
+@pytest.mark.asyncio
+async def test_cluster_state_lands_in_the_volatile_block(tmp_path):
+    """Live object state changes between firings by definition — putting it
+    in the cached block would rebuild the codebase prefix on every alert."""
+    from src.agent.cluster_state import ClusterState
+    from src.integrations.kubernetes_client import parse_pod
+
+    (tmp_path / "app.py").write_text("x = 1\n")
+    gen = PatchGenerator(api_key="sk-test", model="claude-opus-4-7")
+    fake_response = SimpleNamespace(
+        content=[SimpleNamespace(type="text", text=SAMPLE_RESPONSE_TEXT)],
+        model="claude-opus-4-7",
+        usage=SimpleNamespace(
+            input_tokens=500, output_tokens=100,
+            cache_read_input_tokens=0, cache_creation_input_tokens=0,
+        ),
+    )
+    gen.client.messages.create = AsyncMock(return_value=fake_response)
+
+    ctx = _make_ctx()
+    ctx.cluster_state = ClusterState(
+        namespace="prod",
+        pods=[
+            parse_pod(
+                {
+                    "metadata": {"name": "api-1", "namespace": "prod"},
+                    "status": {
+                        "containerStatuses": [
+                            {
+                                "name": "api",
+                                "lastState": {
+                                    "terminated": {"reason": "OOMKilled", "exitCode": 137}
+                                },
+                            }
+                        ]
+                    },
+                }
+            )
+        ],
+    )
+    await gen.generate(ctx, codebase_path=str(tmp_path))
+
+    content = gen.client.messages.create.call_args.kwargs["messages"][0]["content"]
+    cached, volatile = content[0], content[1]
+    assert "cache_control" in cached
+    assert "## Cluster state" not in cached["text"]
+    assert "cache_control" not in volatile
+    assert "## Cluster state" in volatile["text"]
+    assert "exitCode=137" in volatile["text"]
