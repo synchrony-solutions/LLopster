@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs, urlparse
 
 from src.agent.alert_handler import ParsedAlert
+from src.agent.cluster_state import ClusterState, ClusterStateCollector
 from src.integrations.loki_client import LogLine, LokiClient
 from src.integrations.prometheus_client import MetricSample, PrometheusClient
 
@@ -37,6 +38,10 @@ class AlertContext:
     log_lines: list[LogLine] = field(default_factory=list)
     metric_samples: list[MetricSample] = field(default_factory=list)
     queries_used: dict[str, str] = field(default_factory=dict)
+    # Read-only Kubernetes object state. None whenever cluster access is off
+    # (the default) — distinct from a ClusterState that came back empty,
+    # which means we looked and found nothing.
+    cluster_state: ClusterState | None = None
     errors: list[str] = field(default_factory=list)
 
 
@@ -48,9 +53,13 @@ class ContextCollector:
         lookback_minutes: int = 30,
         max_log_lines: int = 200,
         scope_labels: tuple[str, ...] | None = None,
+        cluster: ClusterStateCollector | None = None,
     ):
         self.loki = loki
         self.prometheus = prometheus
+        # None = cluster access disabled (the default). Opt-in, and revocable
+        # on its own without touching logs or metrics.
+        self.cluster = cluster
         self.lookback_minutes = lookback_minutes
         self.max_log_lines = max_log_lines
         # Empty/None → fall back to the module default so direct construction
@@ -83,6 +92,20 @@ class ContextCollector:
             except Exception as e:
                 ctx.errors.append(f"prometheus query failed: {e}")
                 log.exception("prometheus query failed")
+
+        if self.cluster is not None:
+            try:
+                ctx.cluster_state = await self.cluster.collect(alert)
+            except Exception as e:
+                # The collector already degrades per-object; reaching here
+                # means something unforeseen. Logs and metrics still stand.
+                ctx.errors.append(f"cluster state collection failed: {e}")
+                log.exception("cluster state collection failed")
+            else:
+                # Surface k8s failures through the existing error channel so
+                # they land in `collection_errors_json` and the prompt's
+                # "Errors collecting context" section like any other.
+                ctx.errors.extend(f"cluster: {e}" for e in ctx.cluster_state.errors)
 
         return ctx
 

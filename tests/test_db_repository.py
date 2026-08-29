@@ -1,15 +1,18 @@
 """Tests for the run-history repository against an in-memory SQLite."""
 
+import json
 from datetime import datetime, timezone
 
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from src.agent.alert_handler import ParsedAlert
+from src.agent.cluster_state import ClusterState
 from src.agent.context_collector import AlertContext
 from src.agent.patch_generator import PatchProposal
 from src.db import repository as repo
 from src.db.models import Base
+from src.integrations.kubernetes_client import parse_pod
 from src.integrations.loki_client import LogLine
 from src.integrations.prometheus_client import MetricSample
 
@@ -106,6 +109,62 @@ async def test_record_collected_context(session):
     assert fetched.collection_errors_json == ["loki query timed out once"]
     assert fetched.log_lines_json[0]["line"] == "ERROR boom"
     assert fetched.metric_samples_json[0]["value"] == 1.0
+    # Cluster access off (the default) leaves the column NULL, not `{}`.
+    assert fetched.cluster_state_json is None
+
+
+async def test_record_collected_context_persists_redacted_cluster_state(session):
+    """Acceptance criteria, at the storage layer: a CrashLoopBackOff run
+    records the exit code and OOMKilled reason, and env values never land in
+    the run record."""
+    run = await repo.create_run_from_alert(session, _alert(), raw_payload={})
+    pod = parse_pod(
+        {
+            "metadata": {"name": "api-1", "namespace": "prod"},
+            "spec": {
+                "containers": [
+                    {"name": "api", "env": [{"name": "DB_PASSWORD", "value": "hunter2"}]}
+                ]
+            },
+            "status": {
+                "containerStatuses": [
+                    {
+                        "name": "api",
+                        "restartCount": 9,
+                        "state": {"waiting": {"reason": "CrashLoopBackOff"}},
+                        "lastState": {
+                            "terminated": {"reason": "OOMKilled", "exitCode": 137}
+                        },
+                    }
+                ]
+            },
+        }
+    )
+    ctx = AlertContext(
+        alert=_alert(),
+        cluster_state=ClusterState(namespace="prod", pods=[pod], notes=["n"]),
+    )
+    await repo.record_collected_context(session, run.id, ctx, lookback_minutes=30)
+    fetched = await repo.get_run(session, run.id)
+
+    stored = fetched.cluster_state_json
+    assert stored["namespace"] == "prod"
+    container = stored["pods"][0]["containers"][0]
+    assert container["last_state_exit_code"] == 137
+    assert container["last_state_reason"] == "OOMKilled"
+    assert "hunter2" not in json.dumps(stored)
+    assert stored["pods"][0]["spec"]["containers"][0]["env"][0]["name"] == "DB_PASSWORD"
+
+
+async def test_record_collected_context_distinguishes_empty_from_absent(session):
+    """An empty ClusterState means "looked, found nothing" and must still be
+    stored — only disabled access leaves NULL."""
+    run = await repo.create_run_from_alert(session, _alert(), raw_payload={})
+    ctx = AlertContext(alert=_alert(), cluster_state=ClusterState())
+    await repo.record_collected_context(session, run.id, ctx, lookback_minutes=30)
+    fetched = await repo.get_run(session, run.id)
+    assert fetched.cluster_state_json is not None
+    assert fetched.cluster_state_json["pods"] == []
 
 
 # ---------------------------------------------------------------------------
