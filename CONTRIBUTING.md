@@ -41,6 +41,32 @@ python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 ```
 
+### One-time git setup: issue-number commit subjects
+
+Commit subjects in this repo conventionally start with the issue number
+(`#26 Detect Helm chart roots structurally`). Git treats a leading `#` as a
+comment marker and **silently deletes those lines** whenever a message goes
+through its cleanup step — which happens on any editor-based commit, `git
+commit --amend`, and `git rebase --continue` after a hand-resolved conflict.
+The result is a commit whose subject has vanished and whose second line has
+been promoted in its place. It is easy to miss, because messages passed with
+`-m` or `-F` are unaffected.
+
+Configure git to use a different comment marker in this repo:
+
+```bash
+git config core.commentChar ";"
+```
+
+Git then treats `#` as an ordinary character and switches its own editor
+template to `;`, so the template is still stripped and an unchanged one still
+aborts the commit. (Setting `commit.cleanup=whitespace` also preserves `#`, but
+it stops git stripping its template too — save the editor buffer unchanged and
+you commit the instructions. Prefer `core.commentChar`.)
+
+This lives in `.git/config`, so it is per-clone and has to be set once per
+checkout.
+
 To run the full stack locally (agent + dashboard + demo-app + observability),
 follow the **Quickstart** in [README.md](README.md). You'll need an
 `ANTHROPIC_API_KEY` for anything that actually calls the model; most
@@ -103,7 +129,11 @@ and review. Concretely:
    surface, the GitHub/token path, license verification) get extra scrutiny —
    expect questions.
 7. History on `main` is kept **linear** — no merge commits or force-pushes — so
-   expect to rebase (or squash) rather than merge `main` into your branch.
+   expect to rebase (or squash) rather than merge `main` into your branch. If
+   you have not set `core.commentChar` (see
+   [Development setup](#one-time-git-setup-issue-number-commit-subjects)),
+   check your subjects after resolving a conflict — git will have eaten any
+   that start with `#`.
 
 Releases are cut by pushing a `v*` tag, which is restricted to the release team;
 regular contributions never need to tag.
