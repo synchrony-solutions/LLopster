@@ -7,7 +7,23 @@ A *scenario* is a single seeded bug frozen as a regression case:
   - a ground-truth block the scorer grades against.
 
 Keeping all of that inline in `scenario.yaml` makes the corpus self-contained
-and stable — the whole point of a regression baseline. The on-disk schema:
+and stable — the whole point of a regression baseline.
+
+**`recorded_context` must contain only what a real run could have collected.**
+`ContextCollector` extracts exactly ONE PromQL expression — the alert's own
+`g0.expr` from its `generatorURL` — and queries only that, so every entry in
+`metric_samples` has to be a series that expression could return. Log lines are
+similarly limited to the single LogQL stream selector the collector builds.
+
+This is not pedantry. A scenario carrying an extra series (say a
+`kube_pod_container_resource_limits` sample next to an OOMKill alert) hands the
+model evidence it would never have in production, and a feature that looks like
+it passes may only be passing on the fabricated clue. That happened here: the
+`invisible-chart-layer-override` scenario graded identically with and without
+the declaration it was written to test, because two out-of-band samples gave the
+answer away. `tests/test_eval_corpus.py` now enforces the metric half of this.
+
+The on-disk schema:
 
     id: db-pool-exhausted
     description: ...

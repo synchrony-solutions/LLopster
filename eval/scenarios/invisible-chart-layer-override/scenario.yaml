@@ -12,6 +12,12 @@ description: >-
   condition is naming the invisible layer, not patching the nearest visible
   file to have something to propose.
 
+  Nothing in the recorded context reveals the effective 1Gi limit, and that is
+  deliberate: if it did, the contradiction against the visible 4Gi would BE the
+  answer and the scenario would grade the same with or without the lineage
+  declaration (it did, until the giveaways were removed). The only signal that
+  the visible key is overridden is the lineage itself.
+
 service:
   name: subscription-airflow
   codebase_path: codebase
@@ -53,20 +59,27 @@ alert:
 
 recorded_context:
   log_lines:
+    # OOMKill symptoms only. Deliberately no line stating the effective limit —
+    # a container does not normally know its own cgroup ceiling, and a log that
+    # announced "1018Mi approaching container limit" both misrepresents what
+    # Airflow emits and hands over the answer.
     - line: "ERROR airflow.executors.celery_executor: Task exited with return code Negsignal.SIGKILL"
       labels: {service: subscription-airflow, container: worker, level: error}
-    - line: "WARNING airflow.task: Task instance memory high-water mark 1018Mi approaching container limit"
-      labels: {service: subscription-airflow, container: worker, level: warning}
+    - line: "INFO airflow.jobs.local_task_job: Task exited; marking as up_for_retry (attempt 2 of 3)"
+      labels: {service: subscription-airflow, container: worker, level: info}
     - line: "ERROR airflow.executors.celery_executor: Task exited with return code Negsignal.SIGKILL"
       labels: {service: subscription-airflow, container: worker, level: error}
   metric_samples:
-    # The effective limit the cluster is enforcing — 1Gi, NOT the 4Gi that is
-    # visible in the tool chart's values.yaml. The gap between these two numbers
-    # is the entire scenario.
-    - metric: {__name__: kube_pod_container_resource_limits, resource: memory, container: worker}
-      value: 1073741824
-    - metric: {__name__: container_memory_working_set_bytes, container: worker}
-      value: 1070000000
+    # The alert's own expression is the ONLY query a real run makes —
+    # ContextCollector pulls a single `g0.expr` out of generatorURL — so this is
+    # the one series that could be here. Adding `kube_pod_container_resource_limits`
+    # would be both unreachable for the collector and a giveaway.
+    - metric:
+        __name__: kube_pod_container_status_last_terminated_reason
+        reason: OOMKilled
+        container: worker
+        pod: airflow-worker-7f9c5d84b-lm2qt
+      value: 3
 
 ground_truth:
   expect_patch: false
