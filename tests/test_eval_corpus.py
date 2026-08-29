@@ -34,7 +34,17 @@ EXPECTED_UNDELIVERABLE_IDS = {
     "invisible-chart-layer-override",
 }
 
-EXPECTED_IDS = EXPECTED_PATCH_IDS | EXPECTED_UNDELIVERABLE_IDS
+# Scenarios whose evidence lives on a Kubernetes object rather than in logs
+# or metrics (issue #23). They carry a `recorded_context.cluster_state` block
+# and, by design, may record no log lines at all — a container OOM-killed
+# mid-batch flushes nothing.
+EXPECTED_CLUSTER_STATE_IDS = {
+    "crashloop-oomkilled-no-logs",
+}
+
+EXPECTED_IDS = (
+    EXPECTED_PATCH_IDS | EXPECTED_UNDELIVERABLE_IDS | EXPECTED_CLUSTER_STATE_IDS
+)
 
 
 def test_corpus_loads_all_seeded_scenarios():
@@ -55,13 +65,20 @@ def test_each_scenario_is_well_formed():
             f"{s.id}: alert service {s.alert.service!r} does not match the "
             f"registry entry {expected_service!r} the replay will look up"
         )
-        # Recorded context is present so replay is offline.
-        assert s.log_lines, f"{s.id} has no recorded log lines"
+        # Recorded context is present so replay is offline. Log lines are NOT
+        # required: a scenario whose whole point is that the workload logged
+        # nothing before dying has to be allowed to record nothing.
         assert s.metric_samples, f"{s.id} has no recorded metric samples"
+        assert s.log_lines or s.cluster_state is not None, (
+            f"{s.id} records no log lines and no cluster state — an alert with "
+            f"neither has nothing for the pipeline to diagnose from"
+        )
         # Ground truth names at least one expected file + keywords.
         assert isinstance(s.ground_truth, GroundTruth)
         assert s.ground_truth.expected_files
-        assert s.ground_truth.expect_patch is (s.id in EXPECTED_PATCH_IDS)
+        assert s.ground_truth.expect_patch is (
+            s.id in EXPECTED_PATCH_IDS | EXPECTED_CLUSTER_STATE_IDS
+        )
 
 
 def test_undeliverable_scenarios_declare_a_confidence_ceiling():
@@ -231,4 +248,55 @@ def test_recorded_metrics_are_reachable_from_the_alert_expression(scenario):
             f"alert's own expression ({expr!r}). ContextCollector only ever "
             f"runs that one query, so a real run could not have this sample. "
             f"Either drop it or widen the alert expression to match."
+        )
+
+
+@pytest.mark.parametrize("scenario", load_corpus(), ids=lambda s: s.id)
+def test_recorded_cluster_state_matches_the_object_the_alert_names(scenario):
+    """Cluster objects are collectable only for the object the alert points at.
+
+    `ClusterStateCollector` reads the alert's own `namespace` and `pod` labels
+    (or resolves pods through the named workload's selector). A scenario that
+    recorded a neighbouring pod, or a namespace the alert never mentions, is
+    handing the model something no real run could produce — the same class of
+    fabricated clue the metric rule above exists to catch.
+    """
+    state = scenario.cluster_state
+    if state is None:
+        return
+
+    labels = scenario.alert.labels
+    alert_ns = labels.get("namespace") or labels.get("exported_namespace")
+    assert alert_ns, (
+        f"{scenario.id}: recorded cluster_state but the alert carries no "
+        f"namespace label — the collector would have collected nothing"
+    )
+    if state.namespace:
+        assert state.namespace == alert_ns, (
+            f"{scenario.id}: cluster_state namespace {state.namespace!r} is not "
+            f"the alert's namespace {alert_ns!r}"
+        )
+
+    alert_pod = labels.get("pod")
+    if alert_pod:
+        for pod in state.pods:
+            assert pod.name == alert_pod, (
+                f"{scenario.id}: recorded pod {pod.name!r} is not the pod the "
+                f"alert names ({alert_pod!r}). With a `pod` label the collector "
+                f"fetches exactly that one object."
+            )
+    else:
+        # Without a `pod` label the collector needs a workload label to find
+        # any pod at all.
+        assert not state.pods or any(
+            labels.get(k) for k in ("deployment", "statefulset", "daemonset", "job", "job_name")
+        ), (
+            f"{scenario.id}: recorded pods but the alert names neither a pod nor "
+            f"a workload — the collector had nothing to look up"
+        )
+
+    for event in state.events:
+        assert "/" in event.involved_object, (
+            f"{scenario.id}: event involved_object {event.involved_object!r} "
+            f"should be 'Kind/name'"
         )

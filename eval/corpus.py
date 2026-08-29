@@ -23,6 +23,13 @@ it passes may only be passing on the fabricated clue. That happened here: the
 the declaration it was written to test, because two out-of-band samples gave the
 answer away. `tests/test_eval_corpus.py` now enforces the metric half of this.
 
+The same rule governs `cluster_state`, which is only collectable when the agent
+has read-only cluster access enabled AND the alert names the object: every pod
+in a recorded `cluster_state` must be the pod the alert's own labels point at,
+in the alert's own namespace. A scenario that recorded a neighbouring pod, or a
+namespace the alert never mentions, is testing something the collector could
+never hand the model. `tests/test_eval_corpus.py` enforces this too.
+
 The on-disk schema:
 
     id: db-pool-exhausted
@@ -40,6 +47,23 @@ The on-disk schema:
       metric_samples:
         - metric: {__name__: demo_app_db_pool_exhausted_total}
           value: 12
+      cluster_state:             # optional; omit unless the scenario is ABOUT
+        namespace: prod          # cluster state (read-only access is off by
+        pods:                    # default, so most runs have none)
+          - name: api-7d9f-abc
+            phase: Running
+            containers:
+              - name: api
+                restart_count: 9
+                state: waiting
+                state_reason: CrashLoopBackOff
+                last_state: terminated
+                last_state_reason: OOMKilled
+                last_state_exit_code: 137
+                limits: {memory: 256Mi}
+        events:
+          - involved_object: Pod/api-7d9f-abc
+            reason: BackOff
     service:                     # optional; overrides the default registry
       name: subscription-airflow
       codebase_path: codebase    # relative paths resolve against this dir
@@ -62,6 +86,16 @@ from pathlib import Path
 import yaml
 
 from src.agent.alert_handler import ParsedAlert, parse_alertmanager_payload
+from src.agent.cluster_state import ClusterState
+from src.integrations.kubernetes_client import (
+    ClusterEvent,
+    ContainerState,
+    NodeState,
+    OwnerRef,
+    PodCondition,
+    PodState,
+    PVCState,
+)
 from src.integrations.loki_client import LogLine
 from src.integrations.prometheus_client import MetricSample
 from src.services_registry import (
@@ -108,6 +142,11 @@ class Scenario:
     # operator declaration (`delivery`, `chart_lineage`) has to carry its own —
     # the declaration IS the thing under test.
     service: ServiceConfig | None = None
+    # Frozen read-only cluster objects, or None for the (usual) scenario where
+    # cluster access is off. None and an empty ClusterState replay differently:
+    # the first omits the `## Cluster state` prompt block entirely, the second
+    # tells the model the agent looked and found nothing.
+    cluster_state: ClusterState | None = None
 
 
 def _parse_log_lines(raw: list[dict], at) -> list[LogLine]:
@@ -136,6 +175,99 @@ def _parse_metric_samples(raw: list[dict], at) -> list[MetricSample]:
     return out
 
 
+def _parse_cluster_state(raw: object) -> ClusterState | None:
+    """Parse a recorded `cluster_state` block into a real ClusterState.
+
+    Deliberately builds the same dataclasses the live collector produces, so
+    a scenario cannot encode a shape the prompt renderer never sees. Absent
+    block -> None, matching a run with cluster access disabled.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError("recorded_context.cluster_state must be a mapping")
+    return ClusterState(
+        namespace=raw.get("namespace"),
+        pods=[_parse_recorded_pod(p) for p in raw.get("pods") or []],
+        events=[
+            ClusterEvent(
+                involved_object=str(e.get("involved_object", "")),
+                type=e.get("type", "Warning"),
+                reason=e.get("reason"),
+                message=e.get("message"),
+                count=int(e.get("count", 1)),
+                last_timestamp=None,
+            )
+            for e in raw.get("events") or []
+        ],
+        nodes=[
+            NodeState(
+                name=str(n.get("name", "")),
+                conditions=[_parse_recorded_condition(c) for c in n.get("conditions") or []],
+                unschedulable=bool(n.get("unschedulable", False)),
+            )
+            for n in raw.get("nodes") or []
+        ],
+        pvcs=[
+            PVCState(
+                name=str(v.get("name", "")),
+                namespace=str(v.get("namespace", raw.get("namespace") or "")),
+                phase=v.get("phase"),
+                storage_class=v.get("storage_class"),
+                requested_storage=v.get("requested_storage"),
+                volume_name=v.get("volume_name"),
+            )
+            for v in raw.get("pvcs") or []
+        ],
+        objects_queried=[str(o) for o in raw.get("objects_queried") or []],
+        notes=[str(n) for n in raw.get("notes") or []],
+    )
+
+
+def _parse_recorded_pod(raw: dict) -> PodState:
+    return PodState(
+        name=str(raw.get("name", "")),
+        namespace=str(raw.get("namespace", "")),
+        phase=raw.get("phase"),
+        node_name=raw.get("node_name"),
+        conditions=[_parse_recorded_condition(c) for c in raw.get("conditions") or []],
+        containers=[
+            ContainerState(
+                name=str(c.get("name", "")),
+                image=c.get("image"),
+                ready=bool(c.get("ready", False)),
+                restart_count=int(c.get("restart_count", 0)),
+                state=c.get("state"),
+                state_reason=c.get("state_reason"),
+                state_message=c.get("state_message"),
+                last_state=c.get("last_state"),
+                last_state_reason=c.get("last_state_reason"),
+                last_state_exit_code=c.get("last_state_exit_code"),
+                last_state_signal=c.get("last_state_signal"),
+                last_state_finished_at=c.get("last_state_finished_at"),
+                requests={str(k): str(v) for k, v in (c.get("requests") or {}).items()},
+                limits={str(k): str(v) for k, v in (c.get("limits") or {}).items()},
+            )
+            for c in raw.get("containers") or []
+        ],
+        owner_chain=[
+            OwnerRef(kind=str(o.get("kind", "")), name=str(o.get("name", "")),
+                     resolved=bool(o.get("resolved", True)))
+            for o in raw.get("owner_chain") or []
+        ],
+        spec=raw.get("spec"),
+    )
+
+
+def _parse_recorded_condition(raw: dict) -> PodCondition:
+    return PodCondition(
+        type=str(raw.get("type", "")),
+        status=str(raw.get("status", "")),
+        reason=raw.get("reason"),
+        message=raw.get("message"),
+    )
+
+
 def load_scenario(path: Path) -> Scenario:
     """Parse a single `scenario.yaml` into a `Scenario`.
 
@@ -157,6 +289,7 @@ def load_scenario(path: Path) -> Scenario:
     rc = data.get("recorded_context") or {}
     log_lines = _parse_log_lines(rc.get("log_lines", []), at)
     metric_samples = _parse_metric_samples(rc.get("metric_samples", []), at)
+    cluster_state = _parse_cluster_state(rc.get("cluster_state"))
 
     gt = data.get("ground_truth") or {}
     # YAML coerces bare tokens like 512 / 0.001 to numbers — keep the answer
@@ -178,6 +311,7 @@ def load_scenario(path: Path) -> Scenario:
         raw_payload=alert_payload,
         log_lines=log_lines,
         metric_samples=metric_samples,
+        cluster_state=cluster_state,
         ground_truth=ground_truth,
         service=service,
     )

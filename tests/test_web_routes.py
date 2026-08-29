@@ -468,3 +468,108 @@ async def test_run_dispatch_propagates_agent_4xx(app_with_db):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
             r = await c.post(f"/runs/{run.id}/dispatch")
     assert r.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# Cluster state on the detail page (issue #23)
+# ---------------------------------------------------------------------------
+
+async def _run_with_cluster_state(sm, state):
+    from src.agent.context_collector import AlertContext
+
+    async with sm() as s:
+        run = await repo.create_run_from_alert(s, _alert("KubePodCrashLooping"), raw_payload={})
+        run_id = run.id
+        await repo.record_collected_context(
+            s,
+            run_id,
+            AlertContext(alert=_alert("KubePodCrashLooping"), cluster_state=state),
+            lookback_minutes=30,
+        )
+        await repo.update_status(s, run_id, "done")
+    return run_id
+
+
+async def test_run_detail_omits_cluster_state_when_access_was_off(app_with_db):
+    """No block at all is the honest render: a missing section means the agent
+    never looked, which is not the same as the cluster looking fine."""
+    app, sm = app_with_db
+    run_id = await _run_with_cluster_state(sm, None)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        r = await c.get(f"/runs/{run_id}")
+    assert r.status_code == 200
+    assert "Cluster state" not in r.text
+
+
+async def test_run_detail_renders_cluster_state_without_leaking_env_values(app_with_db):
+    from src.agent.cluster_state import ClusterState
+    from src.integrations.kubernetes_client import ClusterEvent, parse_pod
+
+    app, sm = app_with_db
+    pod = parse_pod(
+        {
+            "metadata": {
+                "name": "api-7d9f-abc",
+                "namespace": "prod",
+                "ownerReferences": [
+                    {"apiVersion": "apps/v1", "kind": "ReplicaSet",
+                     "name": "api-7d9f", "controller": True}
+                ],
+            },
+            "spec": {
+                "nodeName": "node-1",
+                "containers": [
+                    {
+                        "name": "api",
+                        "resources": {"limits": {"memory": "256Mi"}},
+                        "env": [{"name": "DB_PASSWORD", "value": "hunter2"}],
+                    }
+                ],
+            },
+            "status": {
+                "phase": "Running",
+                "containerStatuses": [
+                    {
+                        "name": "api",
+                        "restartCount": 9,
+                        "state": {"waiting": {"reason": "CrashLoopBackOff"}},
+                        "lastState": {"terminated": {"reason": "OOMKilled", "exitCode": 137}},
+                    }
+                ],
+            },
+        }
+    )
+    state = ClusterState(
+        namespace="prod",
+        pods=[pod],
+        events=[ClusterEvent(involved_object="Pod/api-7d9f-abc", reason="BackOff",
+                             message="Back-off restarting failed container")],
+        objects_queried=["Pod/api-7d9f-abc"],
+        notes=["node node-1 not read: nodes are cluster-scoped"],
+    )
+    run_id = await _run_with_cluster_state(sm, state)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        r = await c.get(f"/runs/{run_id}")
+    body = r.text
+    assert "Cluster state" in body
+    assert "api-7d9f-abc" in body
+    assert "OOMKilled" in body
+    assert "exit 137" in body
+    assert "CrashLoopBackOff" in body
+    assert "ReplicaSet/api-7d9f" in body
+    assert "BackOff" in body
+    assert "Not collected" in body
+    # The dashboard renders raw prod state; redaction happened at collection.
+    assert "hunter2" not in body
+
+
+async def test_run_detail_renders_an_empty_cluster_state_as_nothing_matched(app_with_db):
+    from src.agent.cluster_state import ClusterState
+
+    app, sm = app_with_db
+    run_id = await _run_with_cluster_state(sm, ClusterState(notes=["namespace out of scope"]))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        r = await c.get(f"/runs/{run_id}")
+    assert "nothing matched" in r.text
+    assert "namespace out of scope" in r.text

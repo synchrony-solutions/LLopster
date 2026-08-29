@@ -145,6 +145,103 @@
             </table>
         </details>
         {% endif %}
+
+        {#
+          Cluster state. Only rendered when the agent actually looked: a
+          missing block means read-only cluster access was disabled for this
+          run, which is a different fact from "the cluster looked fine".
+          Env values are redacted at collection, so nothing here can carry a
+          credential out of the cluster.
+        #}
+        {% if run.cluster_state_json is not none %}
+        {% set cs = run.cluster_state_json %}
+        <details style="margin-top: 8px;" open>
+            <summary>
+                Cluster state
+                {% if cs.objects_queried %}({{ cs.objects_queried | length }} object{{ '' if cs.objects_queried | length == 1 else 's' }} read){% else %}(nothing matched){% endif %}
+            </summary>
+            <div style="padding: 8px 0;">
+                {% if cs.namespace %}
+                <div class="muted">namespace <code>{{ cs.namespace }}</code></div>
+                {% endif %}
+
+                {% for pod in cs.pods %}
+                <div style="margin-top: 10px;">
+                    <strong>Pod {{ pod.name }}</strong>
+                    <span class="muted">
+                        {% if pod.phase %}{{ pod.phase }}{% endif %}
+                        {% if pod.node_name %}on {{ pod.node_name }}{% endif %}
+                    </span>
+                    {% if pod.owner_chain %}
+                    <div class="muted">
+                        owner: {% for o in pod.owner_chain %}{{ o.kind }}/{{ o.name }}{% if not loop.last %} → {% endif %}{% endfor %}
+                    </div>
+                    {% endif %}
+                    <table class="logs">
+                        {% for c in pod.containers %}
+                        <tr>
+                            <td>{{ c.name }}</td>
+                            <td>
+                                {% if c.state %}{{ c.state }}{% if c.state_reason %} ({{ c.state_reason }}){% endif %}{% endif %}
+                                {% if c.last_state_reason or c.last_state_exit_code is not none %}
+                                <span class="muted">
+                                    · last: {{ c.last_state_reason or c.last_state }}
+                                    {% if c.last_state_exit_code is not none %}exit {{ c.last_state_exit_code }}{% endif %}
+                                </span>
+                                {% endif %}
+                                <span class="muted">· restarts {{ c.restart_count }}</span>
+                                {% if c.limits %}<span class="muted">· limits {{ c.limits }}</span>{% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </table>
+                </div>
+                {% endfor %}
+
+                {% if cs.events %}
+                <div style="margin-top: 10px;"><strong>Events</strong></div>
+                <table class="logs">
+                    {% for e in cs.events %}
+                    <tr>
+                        <td class="ts">{{ e.last_timestamp or '—' }}</td>
+                        <td>{{ e.reason }} on {{ e.involved_object }}{% if e.message %} — {{ e.message }}{% endif %}</td>
+                    </tr>
+                    {% endfor %}
+                </table>
+                {% endif %}
+
+                {% if cs.pvcs %}
+                <div style="margin-top: 10px;"><strong>PersistentVolumeClaims</strong></div>
+                <table class="logs">
+                    {% for v in cs.pvcs %}
+                    <tr><td>{{ v.name }}</td><td>{{ v.phase }} · {{ v.storage_class }} · {{ v.requested_storage }}</td></tr>
+                    {% endfor %}
+                </table>
+                {% endif %}
+
+                {% if cs.nodes %}
+                <div style="margin-top: 10px;"><strong>Nodes</strong></div>
+                <table class="logs">
+                    {% for n in cs.nodes %}
+                    <tr>
+                        <td>{{ n.name }}</td>
+                        <td>{% for c in n.conditions %}{{ c.type }}={{ c.status }}{% if not loop.last %}, {% endif %}{% endfor %}</td>
+                    </tr>
+                    {% endfor %}
+                </table>
+                {% endif %}
+
+                {% if cs.notes %}
+                <div style="margin-top: 10px;">
+                    <strong class="muted">Not collected:</strong>
+                    <ul style="margin: 4px 0 0 0; color: var(--text-dim);">
+                        {% for n in cs.notes %}<li>{{ n }}</li>{% endfor %}
+                    </ul>
+                </div>
+                {% endif %}
+            </div>
+        </details>
+        {% endif %}
     </div>
 </section>
 

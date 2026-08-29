@@ -212,6 +212,92 @@ helm upgrade --install llopster oci://ghcr.io/synchrony-solutions/charts/llopste
 
 The dashboard's Settings → Notifications card shows the active provider and offers a **Test** button that pings the channel.
 
+## Read-only Kubernetes cluster state
+
+For a large class of Kubernetes alerts the diagnosis lives on the object and
+nowhere else. `KubeContainerWaiting` has an identical payload whether the
+reason is `ImagePullBackOff`, `CreateContainerConfigError` or
+`CrashLoopBackOff` — three different fixes. A container that dies during
+startup often produces **zero** log lines, and `lastState.terminated.exitCode`
+plus `reason: OOMKilled` are the only signal that exists. A pending PVC's
+answer is in its events, not in any workload's logs. Admission rejections never
+reach the workload at all; they surface as events on the owning ReplicaSet.
+
+LLopster can read those objects — `GET` only — and feed them to the LLM
+alongside Loki logs and Prometheus metrics, as a `## Cluster state` block.
+
+**It is off by default and revocable on its own.**
+
+```yaml
+agent:
+  clusterContext:
+    enabled: true
+    # The namespaces whose alerts this agent handles — usually the same set
+    # agent.servicesConfig covers. One RoleBinding each.
+    namespaces:
+      - demo-app
+      - order-service
+    allNamespaces: false     # ClusterRoleBinding instead; see below
+    maxEvents: 20
+    includePodSpec: true
+    maxPodSpecBytes: 8000
+```
+
+### What it grants
+
+A ClusterRole with `get`/`list`/`watch` and nothing else, over `pods`,
+`events`, `persistentvolumeclaims`, `nodes` (core), `deployments`,
+`statefulsets`, `daemonsets`, `replicasets` (apps), and `jobs`, `cronjobs`
+(batch). The list tracks what the agent actually reads.
+
+**`secrets` is not in it and must not be added.** The agent already holds a
+write-scoped GitHub PAT; granting secrets read would turn incident context into
+an exfiltration surface. `scripts/check_cluster_rbac.py` fails chart CI if a
+verb outside `get`/`list`/`watch`, a wildcard, or a `secrets` rule ever appears.
+
+### Scoping
+
+`namespaces` binds the ClusterRole with one **RoleBinding per namespace** — the
+agent can read those and nothing else, and revoking one is a values edit.
+`allNamespaces: true` binds it cluster-wide instead.
+
+Nodes are cluster-scoped, so **node conditions are only readable under
+`allNamespaces: true`**. A RoleBinding cannot grant them however many
+namespaces it lists. With namespace scoping the agent records a note saying the
+node was not read, rather than issuing a request it knows will be denied.
+
+Enabling with an empty `namespaces` and `allNamespaces: false` **fails the
+render**: it would grant nothing while looking enabled, and every alert would
+come back reporting its namespace as out of scope.
+
+### What reaches the LLM, and what does not
+
+Env-var **values** are stripped before anything leaves the client — names are
+kept (`DATABASE_URL` is diagnostic; its value is a breach). `data` /
+`stringData` maps are elided anywhere they appear, as is the
+`kubectl.kubernetes.io/last-applied-configuration` annotation, which is a full
+serialized copy of an object with env values inline. `valueFrom` and `envFrom`
+survive, because they are references — "this variable comes from Secret X" is
+often the entire answer to a `CreateContainerConfigError`.
+
+The pod spec is capped by `maxPodSpecBytes` and events by `maxEvents`; whatever
+is dropped is recorded on the run rather than silently omitted. Collected state
+is stored on the run (`cluster_state_json`) and rendered on the run detail page.
+
+### Token mounting
+
+With `clusterContext.enabled: false` the agent pod is now rendered with
+`automountServiceAccountToken: false`. Kubernetes mounts an API-server
+credential by default, and a pod with no cluster access has no reason to hold
+one. This does not affect Bedrock IRSA — the EKS webhook injects its own
+projected `sts.amazonaws.com` token independently of automount.
+
+### Failure behavior
+
+An unreachable API server, an RBAC denial, or a pod deleted between the alert
+firing and collection degrades to a warning plus a note on the run. The
+existing logs+metrics context is unaffected and the run completes normally.
+
 ## Monitoring LLopster itself
 
 The agent exposes a Prometheus scrape target at `GET /metrics` (runs by processing status, backlog/queue depth, runs created in the trailing hour, estimated trailing-day synthesis spend, and cost-breaker/manual-mode state — all computed from the database at scrape time, so they survive pod restarts). Turn on the bundled ServiceMonitor to have the Prometheus Operator scrape it:

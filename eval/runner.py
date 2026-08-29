@@ -56,16 +56,36 @@ class _RecordedPrometheusClient:
         return list(self._samples)
 
 
+class _RecordedClusterCollector:
+    """Serves the scenario's frozen cluster objects, ignoring the alert."""
+
+    def __init__(self, state):
+        self._state = state
+
+    async def collect(self, alert):  # noqa: ANN001
+        return self._state
+
+
 def recorded_collector(scenario: Scenario) -> ContextCollector:
     """A ContextCollector wired to the scenario's recorded context.
 
     Goes through the real `collect()` (LogQL building, generatorURL PromQL
     extraction, error handling) so replay exercises that code too — the
     recorded clients just don't hit the network.
+
+    A scenario with no recorded `cluster_state` gets no cluster collector at
+    all, which is exactly a run with read-only cluster access disabled: the
+    prompt carries no `## Cluster state` block. That makes the with/without
+    comparison a real control rather than an empty-section artifact.
     """
     return ContextCollector(
         loki=_RecordedLokiClient(scenario.log_lines),
         prometheus=_RecordedPrometheusClient(scenario.metric_samples),
+        cluster=(
+            _RecordedClusterCollector(scenario.cluster_state)
+            if scenario.cluster_state is not None
+            else None
+        ),
     )
 
 

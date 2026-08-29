@@ -9,6 +9,47 @@ Chart version and `appVersion` are released in lockstep: chart `X.Y.Z` always
 ships image tag `X.Y.Z`. The release workflow refuses to publish if the pushed
 `vX.Y.Z` tag and `helm-chart/Chart.yaml` disagree.
 
+## [Unreleased]
+
+### Added
+
+- **Read-only Kubernetes cluster-state access** (`agent.clusterContext`, issue
+  #23). The agent can now read the objects a firing alert is actually about —
+  container states, `lastState` exit codes and `OOMKilled` reasons, restart
+  counts, configured requests/limits, the pod's owner chain, recent Events,
+  PVC binding failures and node conditions — and feed them to the LLM as a
+  `## Cluster state` block beside Loki logs and Prometheus metrics. This closes
+  the class of alerts whose answer exists nowhere else: a container that dies
+  during startup writes no logs at all, and the exit code is the only signal.
+  - **Off by default and independently revocable.** `enabled: false` renders no
+    RBAC and constructs no client.
+  - `GET` only, no Kubernetes SDK dependency — a thin `httpx` client in the
+    same shape as the Loki and Prometheus clients.
+  - Scope with `namespaces` (one RoleBinding each) or `allNamespaces` (a
+    ClusterRoleBinding). Enabling with neither fails the render rather than
+    silently granting nothing.
+  - The generated ClusterRole carries `get`/`list`/`watch` and never `secrets`,
+    enforced in chart CI by `scripts/check_cluster_rbac.py`.
+  - Env-var values, `data`/`stringData` maps and the
+    `last-applied-configuration` annotation are redacted before anything
+    reaches the LLM, the run record or the dashboard.
+  - Recorded on the run (`cluster_state_json`, migration `0009`) and rendered
+    on the run detail page.
+- Eval scenario `crashloop-oomkilled-no-logs`, and `recorded_context.cluster_state`
+  support in the eval corpus, so the benefit can be measured offline rather
+  than asserted.
+
+### Changed
+
+- The agent pod now sets `automountServiceAccountToken` explicitly, and it is
+  **false** unless `agent.clusterContext.enabled=true`. Kubernetes mounts an
+  API-server credential by default; a pod with no cluster access has no reason
+  to hold one. Bedrock IRSA is unaffected — the EKS webhook injects its own
+  projected token independently of automount.
+- Both LLM confidence scales now reference "the collected evidence" rather than
+  "logs/metrics" alone, so a diagnosis grounded in cluster state is not scored
+  down for the absence of logs the container never wrote.
+
 ## [1.2.0] - 2026-08-17
 
 Enterprise-deployment release. Closes the four gaps that stood between

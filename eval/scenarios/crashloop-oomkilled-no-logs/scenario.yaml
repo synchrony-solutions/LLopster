@@ -1,0 +1,121 @@
+id: crashloop-oomkilled-no-logs
+description: >-
+  The ledger worker is CrashLoopBackOff-ing and has produced ZERO log lines —
+  it is OOM-killed while holding a whole 25k-row batch in memory, before
+  anything is flushed. The alert payload says only "pod restarting", and the
+  codebase offers two plausible culprits: a memory envelope copied from a
+  smaller sibling service (limits.memory 256Mi), and a liveness probe with a
+  5s initial delay in front of a cache warm that sleeps 2s.
+
+  Nothing in the logs or metrics separates them, because there are no logs.
+  The only evidence that picks the right one is on the pod object:
+  lastState.terminated.reason=OOMKilled with exitCode 137, next to the
+  configured 256Mi limit. This is the class of alert issue #23 exists to
+  close — run it with and without read-only cluster access to see the
+  difference the capability actually makes.
+
+# Self-contained fixture: this is not a demo-app bug, and the two competing
+# candidate fixes both have to be visible for the scenario to discriminate.
+service:
+  name: ledger-worker
+  codebase_path: codebase
+  github_repo: example-org/ledger-worker
+
+alert:
+  version: "4"
+  status: firing
+  receiver: agent-webhook
+  groupLabels:
+    alertname: KubePodCrashLooping
+  alerts:
+    - status: firing
+      labels:
+        alertname: KubePodCrashLooping
+        severity: warning
+        service: ledger-worker
+        namespace: payments
+        pod: ledger-worker-6f8b9c4d7-2xqzt
+        container: worker
+      annotations:
+        summary: Pod payments/ledger-worker-6f8b9c4d7-2xqzt is in CrashLoopBackOff
+        description: >-
+          Pod payments/ledger-worker-6f8b9c4d7-2xqzt (container worker) has
+          restarted 9 times in the last 15 minutes and is currently waiting in
+          CrashLoopBackOff.
+      startsAt: "2026-08-29T10:00:00.000Z"
+      endsAt: "0001-01-01T00:00:00Z"
+      generatorURL: "http://localhost:9090/graph?g0.expr=increase%28kube_pod_container_status_restarts_total%5B15m%5D%29%20%3E%205&g0.tab=1"
+      fingerprint: ledger01crash02oom03
+
+recorded_context:
+  # Deliberately empty. The container is killed by the kernel while holding
+  # the batch; nothing is flushed, and the collector's LogQL selector returns
+  # nothing at all. Inventing a helpful log line here would destroy the whole
+  # point of the scenario.
+  log_lines: []
+  metric_samples:
+    # The one series the alert's own g0.expr returns. It says the pod is
+    # restarting; it does not say why.
+    - metric:
+        __name__: kube_pod_container_status_restarts_total
+        namespace: payments
+        pod: ledger-worker-6f8b9c4d7-2xqzt
+        container: worker
+      value: 9
+
+  # Read-only cluster state (issue #23). Present only in this scenario. Drop
+  # this block to reproduce the pre-#23 control run: the collector then builds
+  # no `## Cluster state` section and the model is left choosing between the
+  # memory limit and the liveness probe with nothing to go on.
+  cluster_state:
+    namespace: payments
+    objects_queried:
+      - Pod/ledger-worker-6f8b9c4d7-2xqzt
+      - ReplicaSet/ledger-worker-6f8b9c4d7
+      - Deployment/ledger-worker
+    pods:
+      - name: ledger-worker-6f8b9c4d7-2xqzt
+        namespace: payments
+        phase: Running
+        node_name: ip-10-0-3-91.ec2.internal
+        owner_chain:
+          - kind: ReplicaSet
+            name: ledger-worker-6f8b9c4d7
+          - kind: Deployment
+            name: ledger-worker
+        conditions:
+          - type: Ready
+            status: "False"
+            reason: ContainersNotReady
+            message: "containers with unready status: [worker]"
+        containers:
+          - name: worker
+            image: ghcr.io/example-org/ledger-worker:2.4.0
+            ready: false
+            restart_count: 9
+            state: waiting
+            state_reason: CrashLoopBackOff
+            state_message: "back-off 5m0s restarting failed container=worker"
+            last_state: terminated
+            last_state_reason: OOMKilled
+            last_state_exit_code: 137
+            last_state_signal: 9
+            last_state_finished_at: "2026-08-29T09:58:41Z"
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: "1", memory: 256Mi}
+    events:
+      - involved_object: Pod/ledger-worker-6f8b9c4d7-2xqzt
+        type: Warning
+        reason: BackOff
+        message: "Back-off restarting failed container worker in pod ledger-worker-6f8b9c4d7-2xqzt_payments"
+        count: 24
+    notes:
+      - "node ip-10-0-3-91.ec2.internal not read: nodes are cluster-scoped and this agent is bound to individual namespaces"
+
+ground_truth:
+  expect_patch: true
+  # The memory envelope, not the liveness probe. Both live in values.yaml, so
+  # file targeting alone does not prove the diagnosis — the keywords below are
+  # what separate "raised the memory limit" from "loosened the probe".
+  expected_files: [values.yaml]
+  root_cause_keywords: [oomkilled, memory, 137, limit]

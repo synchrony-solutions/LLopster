@@ -64,6 +64,11 @@ class RunDetail(BaseModel):
     collection_errors_json: list[str]
     log_lines_json: list[dict[str, Any]]
     metric_samples_json: list[dict[str, Any]]
+    # Serialized ClusterState, or None when read-only cluster access was off
+    # for this run — the shipping default. The UI renders the two differently
+    # on purpose: "not collected" is a fact about the agent's configuration,
+    # not about the cluster.
+    cluster_state_json: dict[str, Any] | None = None
     triage_decision: str | None = None
     triage_confidence: int | None = None
     triage_reasoning: str | None = None
