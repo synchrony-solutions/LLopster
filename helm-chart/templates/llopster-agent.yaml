@@ -171,6 +171,12 @@ spec:
         checksum/secrets: {{ .Values.agent.secrets | toYaml | sha256sum }}
     spec:
       serviceAccountName: {{ include "llopster.agent.serviceAccountName" . }}
+      {{- /* No API-server token in the pod unless read-only cluster access is
+         actually on. Kubernetes mounts one by default, so leaving this unset
+         would put a usable credential in a pod that has no reason to hold
+         one. This does NOT affect Bedrock IRSA: the EKS webhook injects its
+         own projected `sts.amazonaws.com` token independently of automount. */}}
+      automountServiceAccountToken: {{ .Values.agent.clusterContext.enabled }}
       {{- with .Values.agent.podSecurityContext }}
       securityContext:
         {{- toYaml . | nindent 8 }}
@@ -276,6 +282,25 @@ spec:
               {{- else -}}
                 {{ required "loki.url is required when loki.bundled=false" .Values.loki.url | quote }}
               {{- end }}
+            {{- if .Values.agent.clusterContext.enabled }}
+            # --- Read-only Kubernetes cluster state (issue #23) ---
+            # Emitted only when enabled, so a default install's PodSpec is
+            # byte-identical to what it was before the feature existed. The
+            # API server address itself is not configured here: the agent
+            # reads it from the ambient KUBERNETES_SERVICE_HOST/PORT.
+            - name: CLUSTER_CONTEXT_ENABLED
+              value: "true"
+            - name: CLUSTER_CONTEXT_NAMESPACES
+              value: {{ join "," .Values.agent.clusterContext.namespaces | quote }}
+            - name: CLUSTER_CONTEXT_ALL_NAMESPACES
+              value: {{ .Values.agent.clusterContext.allNamespaces | quote }}
+            - name: CLUSTER_CONTEXT_MAX_EVENTS
+              value: {{ .Values.agent.clusterContext.maxEvents | quote }}
+            - name: CLUSTER_CONTEXT_INCLUDE_POD_SPEC
+              value: {{ .Values.agent.clusterContext.includePodSpec | quote }}
+            - name: CLUSTER_CONTEXT_MAX_POD_SPEC_BYTES
+              value: {{ .Values.agent.clusterContext.maxPodSpecBytes | quote }}
+            {{- end }}
             - name: ANTHROPIC_API_KEY
               valueFrom:
                 {{- include "llopster.agent.secretKeyRef" (dict "ctx" $ "key" "ANTHROPIC_API_KEY") | nindent 16 }}
