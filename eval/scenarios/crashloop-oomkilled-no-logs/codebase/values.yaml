@@ -4,19 +4,16 @@ image:
   repository: ghcr.io/example-org/ledger-worker
   tag: "2.4.0"
 
-# Resource envelope. These were copied over from the notifications-worker
-# chart when this service was split out; nobody re-measured them against the
-# ledger worker's own working set.
 resources:
   requests:
     cpu: 100m
-    memory: 128Mi
+    memory: 192Mi
   limits:
     cpu: "1"
-    memory: 256Mi
+    memory: 384Mi
 
-# The worker rebuilds its account-code cache on boot before it can serve, so
-# the probe has to tolerate a slow first pass.
+# The worker rebuilds its account-code cache before it can serve. See
+# CACHE_WARM_SECONDS in worker.py — the probe budget has to cover it.
 livenessProbe:
   initialDelaySeconds: 5
   periodSeconds: 10

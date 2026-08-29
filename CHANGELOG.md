@@ -39,6 +39,24 @@ ships image tag `X.Y.Z`. The release workflow refuses to publish if the pushed
   support in the eval corpus, so the benefit can be measured offline rather
   than asserted.
 
+### Fixed
+
+- The eval harness no longer suppresses its own replays. `replay_scenario` now
+  passes `enforce_backoff=False`: the post-firing backoff guards against
+  re-*firings* costing tokens, but a corpus replay is not a re-firing. Left on,
+  a second run of the corpus inside `patch_backoff_minutes` (default 60)
+  skipped every scenario and reported a 0% pass-rate — indistinguishable from a
+  catastrophic regression.
+- `root_cause_keywords` are now graded on `expect_patch: true` scenarios, where
+  they were previously accepted and silently ignored. A scenario whose
+  competing hypotheses live in the same file cannot be graded by file targeting
+  alone. Scenarios that declare no keywords are unaffected.
+- The diagnosis check reads only the `## Root Cause` section, not the whole
+  response. Scanning the full body conflated "concluded X" with "mentioned X
+  while ruling it out" — an observed control run diagnosed a liveness-probe
+  failure and then advised checking `kubectl describe pod` for `OOMKilled`,
+  which scored as a match.
+
 ### Changed
 
 - The agent pod now sets `automountServiceAccountToken` explicitly, and it is

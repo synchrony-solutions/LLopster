@@ -9,18 +9,21 @@ import time
 
 BATCH_SIZE = int(os.environ.get("BATCH_SIZE", "25000"))
 
+# Measured cold-start time for build_account_cache() against the production
+# account table. /healthz does not answer until this completes.
+CACHE_WARM_SECONDS = 45
+
 
 def build_account_cache() -> dict[str, dict]:
-    """Warm the account-code cache. Takes a few seconds on a cold start."""
+    """Warm the account-code cache. Blocks until every code is loaded."""
     cache: dict[str, dict] = {}
     for code in _all_account_codes():
         cache[code] = _describe(code)
-    time.sleep(2)  # settle the connection pool before serving
+    time.sleep(CACHE_WARM_SECONDS)
     return cache
 
 
 def process_batch(rows: list[dict], cache: dict[str, dict]) -> list[dict]:
-    """Join a whole batch in memory, then write it out in one transaction."""
     entries = []
     for row in rows:
         account = cache.get(row["account_code"])
@@ -30,6 +33,7 @@ def process_batch(rows: list[dict], cache: dict[str, dict]) -> list[dict]:
 
 def main() -> None:
     cache = build_account_cache()
+    _serve_healthz()
     while True:
         rows = _fetch(limit=BATCH_SIZE)
         if not rows:
@@ -43,6 +47,7 @@ def _describe(code: str) -> dict: ...
 def _fetch(limit: int) -> list[dict]: ...
 def _ref(row: dict) -> str: ...
 def _write(entries: list[dict]) -> None: ...
+def _serve_healthz() -> None: ...
 
 
 if __name__ == "__main__":

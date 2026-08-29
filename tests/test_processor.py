@@ -962,3 +962,4 @@ def test_widening_adds_exactly_one_path():
     allowed = {"airflow-tool/helm/values.yaml"}
     widened = allowed | {_same_repo_version_ref_path(svc)}
     assert widened == {"airflow-tool/helm/values.yaml", "clusters/prod/values.yaml"}
+

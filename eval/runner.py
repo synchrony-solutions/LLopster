@@ -132,6 +132,11 @@ async def replay_scenario(
         triage=triage,
         investigator=investigator,
         enforce_cost_breaker=False,
+        # A replay is not a re-firing: the corpus is meant to be run again and
+        # again. With the post-firing backoff on, a second run inside
+        # patch_backoff_minutes (default 60) skips every scenario and reports
+        # 0% — a regression signal that is entirely an artifact.
+        enforce_backoff=False,
     )
 
     async with sessionmaker() as session:

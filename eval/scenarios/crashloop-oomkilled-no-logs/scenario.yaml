@@ -2,17 +2,30 @@ id: crashloop-oomkilled-no-logs
 description: >-
   The ledger worker is CrashLoopBackOff-ing and has produced ZERO log lines —
   it is OOM-killed while holding a whole 25k-row batch in memory, before
-  anything is flushed. The alert payload says only "pod restarting", and the
-  codebase offers two plausible culprits: a memory envelope copied from a
-  smaller sibling service (limits.memory 256Mi), and a liveness probe with a
-  5s initial delay in front of a cache warm that sleeps 2s.
+  anything is flushed.
 
-  Nothing in the logs or metrics separates them, because there are no logs.
-  The only evidence that picks the right one is on the pod object:
-  lastState.terminated.reason=OOMKilled with exitCode 137, next to the
-  configured 256Mi limit. This is the class of alert issue #23 exists to
-  close — run it with and without read-only cluster access to see the
-  difference the capability actually makes.
+  The scenario is built so the CODEBASE POINTS AT THE WRONG ANSWER. Reading
+  only the source, the liveness probe is the obvious culprit and the arithmetic
+  is right there: `CACHE_WARM_SECONDS = 45` in worker.py against a probe budget
+  of initialDelaySeconds 5 + periodSeconds 10 x failureThreshold 3 = 35s. The
+  memory envelope (384Mi) looks unremarkable by comparison, and nothing in the
+  source says what the working set actually is.
+
+  Only the pod object corrects it: lastState.terminated.reason=OOMKilled with
+  exitCode 137 and signal 9. A container killed for failing its liveness probe
+  does not look like that.
+
+  Both candidate fixes live in values.yaml, so file targeting cannot separate
+  them — `root_cause_keywords` is what grades the diagnosis (see eval/scoring.py;
+  keywords count on the expect_patch path precisely because of scenarios shaped
+  like this one).
+
+  An earlier draft of this fixture did NOT discriminate: it carried a comment
+  saying the limits were copied from another chart and never re-measured, and
+  paired a 2s cache warm with a 5s initial delay. The control run reached the
+  same answer as the treatment and even asserted "OOMKilled" with no evidence
+  for it. Keep the source pointing away from memory, or this scenario stops
+  testing anything.
 
 # Self-contained fixture: this is not a demo-app bug, and the two competing
 # candidate fixes both have to be visible for the scenario to discriminate.
@@ -114,8 +127,16 @@ recorded_context:
 
 ground_truth:
   expect_patch: true
-  # The memory envelope, not the liveness probe. Both live in values.yaml, so
-  # file targeting alone does not prove the diagnosis — the keywords below are
-  # what separate "raised the memory limit" from "loosened the probe".
+  # Both candidate fixes are in values.yaml, so this only proves the agent
+  # reached the right FILE.
   expected_files: [values.yaml]
-  root_cause_keywords: [oomkilled, memory, 137, limit]
+  # This is what proves it reached the right DIAGNOSIS, and it is ONE keyword
+  # on purpose. The container's exit code is readable only from the pod object,
+  # so a run without cluster access cannot produce it except by fabrication.
+  #
+  # "oomkilled" was deliberately REMOVED: a blind control run diagnosed a
+  # liveness-probe failure and then advised the operator to check
+  # `kubectl describe pod` for `reason: OOMKilled` — naming its own blind spot,
+  # which is the opposite of a match. Keywords here must be things a wrong
+  # answer has no reason to produce, not words anyone can speculate.
+  root_cause_keywords: ["137"]
