@@ -190,3 +190,45 @@ def test_filtered_corpus_version_differs_from_the_full_one():
     subset = select_scenarios(corpus, ["oci-chart-undeliverable-patch"])
     assert corpus_version(subset) != corpus_version(corpus)
     assert corpus_version(subset).startswith("1:")
+
+
+# ---------------------------------------------------------------------------
+# recorded_context fidelity.
+#
+# A scenario is only a valid regression case if it gives the pipeline what a
+# real run would have had. ContextCollector queries exactly one PromQL
+# expression — the alert's own `g0.expr` — so a recorded sample for any other
+# series is evidence the agent could never have collected.
+#
+# This is enforced here rather than in `load_scenario` on purpose: it is a
+# fidelity heuristic, not a parse error, and raising at load time would also
+# block ad-hoc `--scenarios` experiments. CI is the right place to guard the
+# corpus that ships.
+# ---------------------------------------------------------------------------
+
+def _alert_promql(scenario) -> str:
+    from urllib.parse import parse_qs, urlparse
+    qs = parse_qs(urlparse(scenario.alert.generator_url or "").query)
+    return qs.get("g0.expr", [""])[0]
+
+
+@pytest.mark.parametrize("scenario", load_corpus(), ids=lambda s: s.id)
+def test_recorded_metrics_are_reachable_from_the_alert_expression(scenario):
+    """Every recorded metric must be a series the alert's own query returns.
+
+    A sample outside it cannot reach a real run, and silently makes the
+    scenario easier — which is exactly how `invisible-chart-layer-override`
+    came to grade the same with and without the feature it was testing.
+    """
+    expr = _alert_promql(scenario)
+    assert expr, f"{scenario.id}: generatorURL carries no g0.expr to collect from"
+
+    for sample in scenario.metric_samples:
+        name = sample.metric.get("__name__")
+        assert name, f"{scenario.id}: metric sample has no __name__"
+        assert name in expr, (
+            f"{scenario.id}: recorded metric {name!r} does not appear in the "
+            f"alert's own expression ({expr!r}). ContextCollector only ever "
+            f"runs that one query, so a real run could not have this sample. "
+            f"Either drop it or widen the alert expression to match."
+        )
