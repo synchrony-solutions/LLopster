@@ -11,6 +11,27 @@ ships image tag `X.Y.Z`. The release workflow refuses to publish if the pushed
 
 ## [Unreleased]
 
+### Added
+
+- **Flux delivery alerts are recognised from their own labels** (issue #24
+  part C). An alert built on `gotk_resource_info` names the object it is
+  about — kind, namespace, name, `ready`, `suspended`, revision, chart and
+  source — and both LLM stages now receive that as a `## GitOps resource`
+  block, with or without cluster access. Label names follow Flux's reference
+  kube-state-metrics config: the object's namespace is `exported_namespace`,
+  and the `pod`/`namespace`/`service` labels beside it belong to
+  kube-state-metrics.
+- **Suspended Flux objects are skipped before any LLM call**, with a reason
+  naming the object. Suspension is an operator holding reconciliation on
+  purpose; no patch can take effect until it is resumed.
+
+### Changed
+
+- URL-valued alert labels have embedded credentials (`user:token@`) stripped
+  wherever they are rendered into an LLM prompt, including the raw `## Labels`
+  section. Flux exports a GitRepository's `spec.url` as a label, and nothing
+  prevents credentials in it.
+
 ### Fixed
 
 - **Eval replays no longer show the model the scenario's name.** Both LLM
@@ -22,6 +43,7 @@ ships image tag `X.Y.Z`. The release workflow refuses to publish if the pushed
   `/codebases/<name>`. Results recorded before this fix for
   `crashloop-oomkilled-no-logs`, `oci-chart-undeliverable-patch` and
   `invisible-chart-layer-override` were measured with the leak present.
+
 
 ## [1.3.0] - 2026-10-03
 

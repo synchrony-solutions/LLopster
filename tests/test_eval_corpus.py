@@ -4,7 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from src.agent.cluster_state import WORKLOAD_LABELS, alert_label
+from src.agent.alert_handler import alert_label
+from src.agent.cluster_state import WORKLOAD_LABELS
 from eval.corpus import (
     DEFAULT_SCENARIOS_DIR,
     GroundTruth,

@@ -46,7 +46,9 @@ from pathlib import Path
 
 from anthropic import AsyncAnthropic, BadRequestError
 
+from src.agent.alert_handler import strip_url_credentials
 from src.agent.cluster_state import format_cluster_state
+from src.agent.gitops import format_gitops_ref, gitops_ref_from_alert
 from src.agent.context_collector import AlertContext
 from src.agent.prompts import STAGE_INVESTIGATION, PromptResolver
 from src.services_registry import ChartLayer
@@ -324,7 +326,7 @@ def _format_user_blob(
         f"**Started at:** {a.starts_at.isoformat() if a.starts_at else 'unknown'}",
         "",
         "## Labels",
-        *(f"- {k}: {v}" for k, v in sorted(a.labels.items())),
+        *(f"- {k}: {strip_url_credentials(v)}" for k, v in sorted(a.labels.items())),
         "",
         "## Queries used to gather context",
         *(f"- {k}: `{v}`" for k, v in ctx.queries_used.items()),
@@ -336,6 +338,12 @@ def _format_user_blob(
     lines += ["", f"## Prometheus samples ({len(ctx.metric_samples)})"]
     for s in ctx.metric_samples:
         lines.append(f"- {s.metric} = {s.value}")
+    gitops_ref = gitops_ref_from_alert(a)
+    if gitops_ref is not None:
+        # Derived from the alert alone, so present whether or not cluster
+        # access is on. Volatile half, like everything per-alert.
+        lines += [""]
+        lines += format_gitops_ref(gitops_ref)
     if ctx.cluster_state is not None:
         # Volatile by construction (live object state), and rendered here —
         # after the codebase blob's cache_control marker — so it can never

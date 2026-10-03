@@ -16,7 +16,8 @@ import json
 import logging
 from dataclasses import dataclass, field
 
-from src.agent.alert_handler import ParsedAlert
+from src.agent.alert_handler import ParsedAlert, alert_label
+from src.agent.gitops import gitops_ref_from_alert
 from src.integrations.kubernetes_client import (
     ClusterEvent,
     KubernetesAPIError,
@@ -32,19 +33,6 @@ from src.integrations.kubernetes_client import (
 
 log = logging.getLogger("llopster.cluster")
 
-# When a series carries a label the scrape target also sets (honor_labels
-# off, the Prometheus default), the series' own value is renamed
-# `exported_<name>` and `<name>` becomes the *target's* -- e.g. namespace
-# "monitoring" and pod "kube-state-metrics-xyz" on every KSM alert. The
-# exported value is the object the alert is about, so it always wins.
-#
-# A collision is detectable by `exported_namespace` being present, and once it
-# has happened a bare `pod` with no `exported_pod` names the scrape target, not
-# the alerted object (a pod-less KSM series like kube_deployment_* still gets
-# the KSM pod's `pod` label stamped on). Those labels are discarded rather
-# than trusted. `node` is not in the set: pod targets do not carry a node
-# label by default, so a bare `node` beside a collision is still the series'.
-_TARGET_IDENTITY_LABELS = frozenset({"pod"})
 
 # Workload labels kube-state-metrics puts on the alerts that need this most,
 # mapped to the API group/plural needed to fetch the object. Used only when
@@ -255,6 +243,16 @@ class ClusterStateCollector:
                 )
             return pods[: self.max_pods]
 
+        ref = gitops_ref_from_alert(alert)
+        if ref is not None:
+            # Not a workload alert at all -- "names no pod" would read as a
+            # gap in the alert when the object it names simply is not a pod.
+            state.notes.append(
+                f"alert is about {ref.display}, not a workload; Flux objects "
+                "are not read by this agent, so its status conditions are "
+                "not included"
+            )
+            return []
         state.notes.append(
             "alert names no pod or workload; only namespace-level context collected"
         )
@@ -349,21 +347,6 @@ class ClusterStateCollector:
             return
         state.nodes.append(parse_node(obj))
         state.objects_queried.append(f"Node/{name}")
-
-
-def alert_label(alert: ParsedAlert, name: str) -> str | None:
-    """The alerted object's value for `name`, resolving scrape collisions.
-
-    Public because the eval corpus fidelity test has to select objects exactly
-    the way the collector does.
-    """
-    labels = alert.labels
-    exported = labels.get(f"exported_{name}")
-    if exported:
-        return exported
-    if name in _TARGET_IDENTITY_LABELS and labels.get("exported_namespace"):
-        return None
-    return labels.get(name) or None
 
 
 def _pod_health_rank(obj: dict) -> tuple[int, int]:
