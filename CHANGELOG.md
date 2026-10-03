@@ -41,9 +41,10 @@ ships image tag `X.Y.Z`. The release workflow refuses to publish if the pushed
     without Flux records a note, not an error.
   - Shown on the run detail page; stored in `cluster_state_json` (no
     migration).
-- Eval scenario `flux-helmrelease-schema-rejected`: an upgrade rejected by
-  the chart's values schema, where the HelmRelease condition message is the
-  only evidence of which value is wrong.
+- Eval scenario `flux-helmrelease-missing-crd`: an upgrade Helm rejects
+  because the cluster lacks the ServiceMonitor CRD, with several equally
+  plausible changes in the same chart bump. The HelmRelease condition message
+  is the only evidence of the cause; nothing in the codebase reveals it.
 
 ### Changed
 

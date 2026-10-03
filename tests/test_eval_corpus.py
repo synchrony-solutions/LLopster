@@ -44,8 +44,8 @@ EXPECTED_UNDELIVERABLE_IDS = {
 EXPECTED_CLUSTER_STATE_IDS = {
     "crashloop-oomkilled-no-logs",
     # Flux delivery state (issue #24): the HelmRelease condition message is
-    # the only evidence of which value the chart's schema rejected.
-    "flux-helmrelease-schema-rejected",
+    # the only evidence that the cluster lacks the ServiceMonitor CRD.
+    "flux-helmrelease-missing-crd",
 }
 
 EXPECTED_IDS = (

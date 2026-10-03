@@ -3,7 +3,9 @@ kind: Deployment
 metadata:
   name: {{ .Release.Name }}
 spec:
+  {{- if not .Values.autoscaling.enabled }}
   replicas: {{ .Values.replicaCount }}
+  {{- end }}
   selector:
     matchLabels:
       app: {{ .Release.Name }}
@@ -16,6 +18,13 @@ spec:
         - name: checkout
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+            {{- if .Values.metrics.enabled }}
+            - name: metrics
+              containerPort: {{ .Values.metrics.port }}
+            {{- end }}
           env:
             - name: PAYMENT_ENDPOINT
               value: {{ .Values.paymentProvider.endpoint | quote }}
@@ -23,5 +32,10 @@ spec:
               value: {{ .Values.paymentProvider.timeoutSeconds | quote }}
             - name: PAYMENT_MAX_RETRIES
               value: {{ .Values.paymentProvider.maxRetries | quote }}
+            - name: PAYMENT_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.paymentProvider.credentialsSecret }}
+                  key: api-key
           resources:
             {{- toYaml .Values.resources | nindent 12 }}

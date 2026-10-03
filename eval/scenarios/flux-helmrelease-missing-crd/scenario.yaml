@@ -1,21 +1,35 @@
-id: flux-helmrelease-schema-rejected
+id: flux-helmrelease-missing-crd
 description: >-
   The checkout HelmRelease will not become Ready after a chart bump to 1.4.3.
-  The upgrade is rejected by the chart's values schema before anything is
-  applied, so the previous release (1.4.2) keeps running and is healthy: no
-  crash loop, no error logs, no metric anomaly. The only evidence of WHAT is
-  wrong is the HelmRelease's own Ready condition message, which Helm wrote and
-  which names the key: `/resources/limits/memory: '512MB' does not match
-  pattern`.
+  Helm rejects the upgrade before applying anything: the new chart renders a
+  ServiceMonitor, and this cluster has no Prometheus Operator CRDs. The
+  previous release (1.4.2) keeps running and is healthy — no crash loop, no
+  error logs, no metric anomaly.
 
-  The codebase is built so the 1.4.3 bump offers several plausible suspects —
-  a new image tag, a new paymentProvider block with retry settings, a PDB.
-  Without the condition message the obvious guess is the new image or the new
-  provider config; `512MB` sits quietly among valid quantities.
+  The cause exists only in the cluster. Nothing in the codebase says the CRD
+  is missing, so it cannot be derived from source; the HelmRelease's Ready
+  condition message is the only evidence. (The first draft of this scenario
+  used a values-schema violation, and a control run solved it by checking
+  values.yaml against values.schema.json — a schema failure is derivable from
+  source by construction.)
 
-  The condition message is Helm's verbatim output for this exact chart
-  (`helm template` against codebase/ produces it; fixing the one value renders
-  clean), so the recorded context is something a real run would collect.
+  The 1.4.3 bump offers several equally plausible failure stories: a new
+  payment-provider credentials Secret reference (a missing Secret is a classic
+  failed rollout), an HPA replacing the fixed replica count, a new metrics
+  port and ServiceMonitor, and an image bump. Without the condition message
+  the model has to guess among them.
+
+  The condition message is assembled from the real format strings, each read
+  from source: helm-controller internal/reconcile/upgrade.go
+  ("Helm upgrade failed for release %s/%s with chart %s@%s: %s"), Helm
+  pkg/action/upgrade.go ("unable to build kubernetes objects from new release
+  manifest: %w"), cli-runtime pkg/resource/mapper.go ("resource mapping not
+  found for name: %q namespace: %q from %q: %w\nensure CRDs are installed
+  first") and apimachinery meta/errors.go ("no matches for kind %q in version
+  %q").
+
+  The repo-side fix is metrics.serviceMonitor.enabled: false in values.yaml
+  (installing the CRDs is the other fix, and is not a change to this repo).
 
   Control: replay with `cluster_state` removed. The alert then carries only
   its labels (ready=False, revision) and the `## GitOps resource` block —
@@ -66,8 +80,8 @@ alert:
       generatorURL: "http://localhost:9090/graph?g0.expr=gotk_resource_info%7Bcustomresource_kind%3D%22HelmRelease%22%2Cexported_namespace%3D%22prod%22%2Cname%3D%22checkout%22%2Cready%3D%22False%22%7D%20%3D%3D%201&g0.tab=1"
 
 recorded_context:
-  # The running 1.4.2 pods are healthy and the rejected upgrade never ran, so
-  # there is nothing in the workload's logs.
+  # The running 1.4.2 pods are healthy and the rejected upgrade never applied
+  # anything, so there is nothing in the workload's logs.
   log_lines: []
   metric_samples:
     - metric:
@@ -92,9 +106,8 @@ recorded_context:
               status: "False"
               reason: UpgradeFailed
               message: |-
-                Helm upgrade failed for release prod/checkout with chart checkout@1.4.3: values don't meet the specifications of the schema(s) in the following chart(s):
-                checkout:
-                - at '/resources/limits/memory': '512MB' does not match pattern '^[0-9]+(Ki|Mi|Gi)$'
+                Helm upgrade failed for release prod/checkout with chart checkout@1.4.3: unable to build kubernetes objects from new release manifest: resource mapping not found for name: "checkout" namespace: "" from "": no matches for kind "ServiceMonitor" in version "monitoring.coreos.com/v1"
+                ensure CRDs are installed first
             - type: Released
               status: "False"
               reason: UpgradeFailed
@@ -125,12 +138,13 @@ recorded_context:
       events:
         - involved_object: HelmRelease/checkout
           reason: UpgradeFailed
-          message: "Helm upgrade failed for release prod/checkout with chart checkout@1.4.3: values don't meet the specifications of the schema(s)"
+          message: "Helm upgrade failed for release prod/checkout with chart checkout@1.4.3: unable to build kubernetes objects from new release manifest"
           count: 3
 
 ground_truth:
   expect_patch: true
   expected_files: [values.yaml]
-  # Graded on the Root Cause section. The wrong answers this scenario invites
-  # (the image tag, the retry settings) have no reason to say 512MB.
-  root_cause_keywords: ["512MB"]
+  # Graded on the Root Cause section. The competing stories this scenario
+  # offers (the credentials Secret, the HPA, the image) have no reason to name
+  # the ServiceMonitor.
+  root_cause_keywords: ["ServiceMonitor"]
