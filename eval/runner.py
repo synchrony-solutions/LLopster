@@ -17,7 +17,13 @@ No PR is ever opened (`github=None`) and no Slack message is sent
 from __future__ import annotations
 
 import logging
+import shutil
+import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import replace
 from datetime import datetime
+from pathlib import Path
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -31,7 +37,7 @@ from src.db import repository as repo
 from src.db.models import Run
 from src.integrations.loki_client import LogLine
 from src.integrations.prometheus_client import MetricSample
-from src.services_registry import ServiceRegistry
+from src.services_registry import ServiceConfig, ServiceRegistry
 
 log = logging.getLogger("llopster.eval.runner")
 
@@ -108,9 +114,49 @@ async def replay_scenario(
     # for this replay. The declaration (delivery mode, chart lineage) is the
     # thing under test, so it has to travel with the scenario rather than being
     # wired globally in the driver.
-    if scenario.service is not None:
-        services = ServiceRegistry.from_mapping({scenario.service.name: scenario.service})
+    if scenario.service is None:
+        return await _replay(
+            scenario, sessionmaker=sessionmaker, services=services, patcher=patcher,
+            triage=triage, investigator=investigator,
+        )
+    with neutral_codebase(scenario.service) as service:
+        return await _replay(
+            scenario,
+            sessionmaker=sessionmaker,
+            services=ServiceRegistry.from_mapping({service.name: service}),
+            patcher=patcher,
+            triage=triage,
+            investigator=investigator,
+        )
 
+
+@contextmanager
+def neutral_codebase(service: ServiceConfig) -> Iterator[ServiceConfig]:
+    """Serve a scenario's codebase from ``<tmp>/<service-name>`` for one replay.
+
+    Both LLM prompts print the codebase root ("# Codebase outline rooted at
+    ..."). In production that is a neutral ``/codebases/<name>``; replayed in
+    place it is ``eval/scenarios/<scenario-id>/codebase``, and scenario ids
+    describe the answer by convention -- a control run said outright that "the
+    codebase path itself contains the string flux-helmrelease-schema-rejected,
+    making the failure mode unambiguous". Copying to a directory named after
+    the service reproduces what production shows the model and nothing more.
+    """
+    with tempfile.TemporaryDirectory(prefix="llopster-eval-") as tmp:
+        target = Path(tmp) / service.name
+        shutil.copytree(service.codebase_path, target)
+        yield replace(service, codebase_path=str(target))
+
+
+async def _replay(
+    scenario: Scenario,
+    *,
+    sessionmaker: async_sessionmaker[AsyncSession],
+    services: ServiceRegistry,
+    patcher: PatchGenerator,
+    triage: Triage | None,
+    investigator: Investigator | None,
+) -> Run:
     async with sessionmaker() as session:
         run = await repo.create_run_from_alert(
             session,

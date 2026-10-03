@@ -315,3 +315,48 @@ async def test_recorded_cluster_state_reaches_the_alert_context():
     ctx = await recorded_collector(scenario).collect(scenario.alert)
     assert ctx.cluster_state is not None
     assert ctx.cluster_state.namespace == "payments"
+
+
+# ---------------------------------------------------------------------------
+# The replayed codebase path must not leak the scenario id
+# ---------------------------------------------------------------------------
+
+_OWN_CODEBASE = [s for s in load_corpus() if s.service is not None]
+
+
+@pytest.mark.parametrize("scenario", _OWN_CODEBASE, ids=lambda s: s.id)
+@pytest.mark.asyncio
+async def test_replayed_codebase_path_never_names_the_scenario(scenario, sessionmaker_fixture):
+    """Both prompts print the codebase root. Scenario ids describe the answer
+    ("crashloop-oomkilled-no-logs"), so replaying in place handed it to the
+    model. The replay must look like production: a directory named after the
+    service, holding the same files."""
+    from pathlib import Path
+
+    from src.agent.investigator import build_codebase_outline
+
+    seen = {}
+
+    async def capture(*args, **kwargs):
+        root = Path(kwargs["codebase_path"])
+        seen["path"] = root
+        seen["outline"] = build_codebase_outline(root)
+        seen["files"] = sorted(str(p.relative_to(root)) for p in root.rglob("*") if p.is_file())
+        return _proposal("## Root Cause\nx\n\n## Confidence\n1/5 — x\n", 1)
+
+    patcher = MagicMock()
+    patcher.generate = AsyncMock(side_effect=capture)
+    await replay_scenario(
+        scenario, sessionmaker=sessionmaker_fixture, services=_services(),
+        patcher=patcher, triage=None, investigator=None,
+    )
+
+    assert seen["path"].name == scenario.service.name
+    assert scenario.id not in str(seen["path"])
+    assert scenario.id not in seen["outline"]
+    original = Path(scenario.service.codebase_path)
+    assert seen["files"] == sorted(
+        str(p.relative_to(original)) for p in original.rglob("*") if p.is_file()
+    )
+    # The copy is scratch for one replay only.
+    assert not seen["path"].exists()
