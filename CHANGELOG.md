@@ -30,9 +30,16 @@ ships image tag `X.Y.Z`. The release workflow refuses to publish if the pushed
     silently granting nothing.
   - The generated ClusterRole carries `get`/`list`/`watch` and never `secrets`,
     enforced in chart CI by `scripts/check_cluster_rbac.py`.
-  - Env-var values, `data`/`stringData` maps and the
+  - Env-var values, container `command`/`args`, probe and lifecycle
+    `httpHeaders` values, `data`/`stringData` maps and the
     `last-applied-configuration` annotation are redacted before anything
     reaches the LLM, the run record or the dashboard.
+  - Object names from alert labels are validated as Kubernetes names before
+    they reach a request path, so a crafted label cannot step outside the
+    permitted namespace (`../`) or inject query parameters.
+  - Scrape label collisions are resolved: `exported_namespace` /
+    `exported_pod` name the alerted object and win over the target's own
+    labels. The Prometheus `job` label is not mistaken for a batch Job.
   - Recorded on the run (`cluster_state_json`, migration `0009`) and rendered
     on the run detail page.
 - Eval scenario `crashloop-oomkilled-no-logs`, and `recorded_context.cluster_state`

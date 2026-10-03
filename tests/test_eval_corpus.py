@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from src.agent.cluster_state import WORKLOAD_LABELS, alert_label
 from eval.corpus import (
     DEFAULT_SCENARIOS_DIR,
     GroundTruth,
@@ -265,8 +266,7 @@ def test_recorded_cluster_state_matches_the_object_the_alert_names(scenario):
     if state is None:
         return
 
-    labels = scenario.alert.labels
-    alert_ns = labels.get("namespace") or labels.get("exported_namespace")
+    alert_ns = alert_label(scenario.alert, "namespace")
     assert alert_ns, (
         f"{scenario.id}: recorded cluster_state but the alert carries no "
         f"namespace label — the collector would have collected nothing"
@@ -277,7 +277,7 @@ def test_recorded_cluster_state_matches_the_object_the_alert_names(scenario):
             f"the alert's namespace {alert_ns!r}"
         )
 
-    alert_pod = labels.get("pod")
+    alert_pod = alert_label(scenario.alert, "pod")
     if alert_pod:
         for pod in state.pods:
             assert pod.name == alert_pod, (
@@ -289,7 +289,7 @@ def test_recorded_cluster_state_matches_the_object_the_alert_names(scenario):
         # Without a `pod` label the collector needs a workload label to find
         # any pod at all.
         assert not state.pods or any(
-            labels.get(k) for k in ("deployment", "statefulset", "daemonset", "job", "job_name")
+            alert_label(scenario.alert, k) for k in WORKLOAD_LABELS
         ), (
             f"{scenario.id}: recorded pods but the alert names neither a pod nor "
             f"a workload — the collector had nothing to look up"

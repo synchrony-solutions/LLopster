@@ -207,7 +207,7 @@ def test_parse_pod_omits_spec_when_not_requested():
 
 def test_parse_pod_drops_oversized_spec_and_flags_it():
     obj = _crashloop_pod()
-    obj["spec"]["containers"][0]["args"] = ["x" * 20_000]
+    obj["spec"]["containers"][0]["image"] = "x" * 20_000
     pod = parse_pod(obj, include_spec=True, max_spec_bytes=1000)
     assert pod.spec is None
     assert pod.spec_truncated is True
@@ -593,3 +593,85 @@ def test_in_cluster_base_url_brackets_ipv6_service_addresses(monkeypatch):
     monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "fd00::1")
     monkeypatch.setenv("KUBERNETES_SERVICE_PORT_HTTPS", "443")
     assert in_cluster_base_url() == "https://[fd00::1]:443"
+
+
+# --------------------------------------------------------------------------
+# Alert-supplied names never become path traversal or query injection
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["../../other/pods/x", "..", "x/y", "x?watch=true", "x#frag", "X-Upper", "", "a" * 254],
+)
+@pytest.mark.asyncio
+async def test_invalid_object_names_are_refused_before_any_request(name, tmp_path):
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        return httpx.Response(200, json={})
+
+    k8s = _client(handler, tmp_path)
+    for call in (
+        lambda: k8s.get_pod("prod", name),
+        lambda: k8s.get_pod(name, "api-1"),
+        lambda: k8s.get_node(name),
+        lambda: k8s.get_pvc("prod", name),
+        lambda: k8s.get_namespaced("apps/v1", "deployments", "prod", name),
+        lambda: k8s.list_events("prod", name),
+    ):
+        with pytest.raises(KubernetesAPIError, match="invalid Kubernetes object name"):
+            await call()
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_dotted_names_are_still_legal(tmp_path):
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.path)
+        return httpx.Response(200, json={})
+
+    k8s = _client(handler, tmp_path)
+    await k8s.get_node("ip-10-0-0-1.ec2.internal")
+    assert seen == ["/api/v1/nodes/ip-10-0-0-1.ec2.internal"]
+
+
+# --------------------------------------------------------------------------
+# Redaction beyond env: argv and probe headers
+# --------------------------------------------------------------------------
+
+
+def test_redact_pod_spec_blanks_command_and_args_but_keeps_their_shape():
+    spec = {
+        "containers": [
+            {"name": "api", "command": ["/app"], "args": ["--db-password=hunter2", "-v"]}
+        ]
+    }
+    out = redact_pod_spec(spec)["containers"][0]
+    assert out["command"] == [REDACTED]
+    assert out["args"] == [REDACTED, REDACTED]
+    assert "hunter2" not in str(out)
+
+
+def test_redact_pod_spec_blanks_probe_and_lifecycle_secrets():
+    header = {"name": "Authorization", "value": "Bearer s3cr3t"}
+    spec = {
+        "initContainers": [
+            {
+                "name": "api",
+                "livenessProbe": {"httpGet": {"path": "/h", "httpHeaders": [dict(header)]}},
+                "readinessProbe": {"exec": {"command": ["mysqladmin", "-phunter2", "ping"]}},
+                "lifecycle": {"preStop": {"httpGet": {"httpHeaders": [dict(header)]}}},
+            }
+        ]
+    }
+    out = redact_pod_spec(spec)["initContainers"][0]
+    assert out["livenessProbe"]["httpGet"]["httpHeaders"] == [
+        {"name": "Authorization", "value": REDACTED}
+    ]
+    assert out["livenessProbe"]["httpGet"]["path"] == "/h"
+    assert out["readinessProbe"]["exec"]["command"] == [REDACTED] * 3
+    assert "s3cr3t" not in str(out) and "hunter2" not in str(out)

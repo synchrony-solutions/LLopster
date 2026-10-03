@@ -472,8 +472,9 @@ agent:
   #     and never `secrets` — the agent already holds a write-scoped GitHub
   #     token, and secrets read would make incident context an exfiltration
   #     surface. Enforced by scripts/check_cluster_rbac.py in chart CI.
-  #   * env values in pod specs are redacted before collection, so they
-  #     reach neither the LLM request nor the run record on disk.
+  #   * env values, command/args and probe header values in pod specs are
+  #     redacted before collection, so they reach neither the LLM request
+  #     nor the run record on disk.
   clusterContext:
     enabled: false
     # Namespaces the agent may read, one RoleBinding each. These should be

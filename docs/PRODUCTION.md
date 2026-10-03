@@ -278,9 +278,19 @@ kept (`DATABASE_URL` is diagnostic; its value is a breach). `data` /
 `kubectl.kubernetes.io/last-applied-configuration` annotation, which is a full
 serialized copy of an object with env values inline. `valueFrom` and `envFrom`
 survive, because they are references — "this variable comes from Secret X" is
-often the entire answer to a `CreateContainerConfigError`.
+often the entire answer to a `CreateContainerConfigError`. Container `command` /
+`args` (including probe and lifecycle `exec.command`) are blanked element by
+element, since argv is where literals like `--db-password=…` end up, and probe /
+lifecycle `httpHeaders` values are blanked with header names kept.
 
-The pod spec is capped by `maxPodSpecBytes` and events by `maxEvents`; whatever
+Object names taken from alert labels must be legal Kubernetes names before they
+reach a request path; anything else (`../`, `?`, `/`) is refused and recorded as
+a collection error. When a label collision renamed the alert's labels
+(`exported_namespace` present), the `exported_*` value is used — the bare label
+names the scrape target, not the alerted object.
+
+The pod spec is capped by `maxPodSpecBytes` and events by `maxEvents`; when an
+alert names only a workload, the least healthy of its pods are kept. Whatever
 is dropped is recorded on the run rather than silently omitted. Collected state
 is stored on the run (`cluster_state_json`) and rendered on the run detail page.
 

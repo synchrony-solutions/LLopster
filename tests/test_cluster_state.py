@@ -365,7 +365,7 @@ async def test_include_pod_spec_false_omits_the_spec_without_a_note():
 
 @pytest.mark.asyncio
 async def test_oversized_pod_spec_is_noted_so_the_omission_is_visible():
-    big = {**POD, "spec": {**POD["spec"], "containers": [{"name": "api", "args": ["x" * 20000]}]}}
+    big = {**POD, "spec": {**POD["spec"], "containers": [{"name": "api", "image": "x" * 20000}]}}
     c = collector({"/pods/api-7d9f-abc": big, "/replicasets/api-7d9f": REPLICASET,
                    "/deployments/api": {"metadata": {}}, "/events": {"items": []}},
                   max_pod_spec_bytes=500)
@@ -420,3 +420,121 @@ async def test_event_lookup_failure_does_not_lose_the_pod():
     assert len(state.pods) == 1
     assert state.events == []
     assert state.errors
+
+
+# --------------------------------------------------------------------------
+# Label resolution: scrape collisions and the `job` label
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_exported_labels_win_over_the_scrape_targets_own():
+    # KSM scraped with honor_labels off: `namespace`/`pod` are KSM's own.
+    c = collector({"/pods/api-7d9f-abc": POD, "/replicasets/api-7d9f": REPLICASET,
+                   "/deployments/api": {"metadata": {}}, "/events": EVENTS})
+    state = await c.collect(make_alert(
+        namespace="monitoring", exported_namespace="prod",
+        pod="kube-state-metrics-xyz", exported_pod="api-7d9f-abc",
+    ))
+    assert state.namespace == "prod"
+    assert [p.name for p in state.pods] == ["api-7d9f-abc"]
+    assert not any("kube-state-metrics" in path for path in c.seen)
+
+
+@pytest.mark.asyncio
+async def test_after_a_collision_a_bare_pod_label_is_the_target_not_the_object():
+    deployment = {"metadata": {"name": "api"},
+                  "spec": {"selector": {"matchLabels": {"app": "api"}}}}
+    c = collector({"/deployments/api": deployment,
+                   "/namespaces/prod/pods": {"items": [POD]},
+                   "/replicasets/api-7d9f": REPLICASET, "/events": {"items": []}})
+    state = await c.collect(make_alert(
+        namespace="monitoring", exported_namespace="prod",
+        pod="kube-state-metrics-xyz", deployment="api",
+    ))
+    assert [p.name for p in state.pods] == ["api-7d9f-abc"]
+    assert not any("kube-state-metrics" in path for path in c.seen)
+
+
+@pytest.mark.asyncio
+async def test_prometheus_job_label_is_not_read_as_a_batch_job():
+    c = collector({})
+    state = await c.collect(make_alert(namespace="prod", job="demo-app"))
+    assert not any("/jobs/" in path for path in c.seen)
+    assert not any("no longer exists" in n for n in state.notes)
+    assert any("names no pod or workload" in n for n in state.notes)
+
+
+@pytest.mark.asyncio
+async def test_traversal_in_a_label_is_recorded_as_an_error_not_requested():
+    c = collector({})
+    state = await c.collect(make_alert(namespace="prod", pod="../../kube-system/pods/x"))
+    assert c.seen == []
+    assert state.pods == []
+    assert any("invalid Kubernetes object name" in e for e in state.errors)
+
+
+# --------------------------------------------------------------------------
+# Caps are stated, never silent
+# --------------------------------------------------------------------------
+
+
+def _replica(name: str, *, ready: bool, restarts: int = 0) -> dict:
+    return {
+        "metadata": {"name": name, "namespace": "prod"},
+        "spec": {"containers": [{"name": "api"}]},
+        "status": {"phase": "Running", "containerStatuses": [
+            {"name": "api", "ready": ready, "restartCount": restarts}
+        ]},
+    }
+
+
+@pytest.mark.asyncio
+async def test_workload_path_keeps_the_least_healthy_pods_and_notes_the_rest():
+    deployment = {"metadata": {"name": "api"},
+                  "spec": {"selector": {"matchLabels": {"app": "api"}}}}
+    replicas = [_replica(f"api-{i}", ready=True) for i in range(9)]
+    replicas.insert(6, _replica("api-crashing", ready=False, restarts=12))
+
+    def pods(request: httpx.Request) -> httpx.Response:
+        assert int(request.url.params["limit"]) > 3  # scanned, not sliced
+        return httpx.Response(200, json={"items": replicas})
+
+    c = collector({"/deployments/api": deployment, "/namespaces/prod/pods": pods,
+                   "/events": {"items": []}}, max_pods=3)
+    state = await c.collect(make_alert(namespace="prod", deployment="api"))
+    assert len(state.pods) == 3
+    assert state.pods[0].name == "api-crashing"
+    assert any("10 pods" in n and "7 omitted" in n for n in state.notes)
+
+
+@pytest.mark.asyncio
+async def test_event_sources_past_the_cap_are_named_in_a_note():
+    deployment = {"metadata": {"name": "api"},
+                  "spec": {"selector": {"matchLabels": {"app": "api"}}}}
+    replicas = [_replica(f"api-{i}", ready=False) for i in range(3)]
+    for r in replicas:
+        r["metadata"]["ownerReferences"] = REPLICASET_REF
+    c = collector({"/deployments/api": deployment,
+                   "/namespaces/prod/pods": {"items": replicas},
+                   "/replicasets/api-7d9f": REPLICASET, "/events": {"items": []}})
+    state = await c.collect(make_alert(namespace="prod", deployment="api"))
+    # pod, RS, Deployment, pod = 4 sources; the third pod is past the cap.
+    assert any("events not fetched for api-2" in n for n in state.notes)
+
+
+@pytest.mark.asyncio
+async def test_pvc_event_merge_notes_its_truncation():
+    pvc = {"metadata": {"name": "data", "namespace": "prod"}, "status": {"phase": "Pending"}}
+    many = events_for({"data": [
+        event("data", f"E{i}", f"2026-08-29T10:{i:02d}:00Z") for i in range(5)
+    ]})
+    c = collector({"/persistentvolumeclaims/data": pvc, "/events": many}, max_events=2)
+    state = await c.collect(make_alert(namespace="prod", persistentvolumeclaim="data"))
+    assert len(state.events) == 2
+    assert any("including the claim's" in n for n in state.notes)
+
+
+REPLICASET_REF = [
+    {"apiVersion": "apps/v1", "kind": "ReplicaSet", "name": "api-7d9f", "controller": True}
+]

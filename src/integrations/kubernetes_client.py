@@ -24,6 +24,7 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -63,6 +64,23 @@ MAX_OWNER_DEPTH = 4
 
 class KubernetesAPIError(Exception):
     """API server unreachable, TLS failure, or a non-404 HTTP status."""
+
+
+# RFC 1123 subdomain: what Kubernetes itself enforces for namespaces, pods,
+# nodes, PVCs and workloads. Every name reaching a URL path here comes from
+# alert labels, and the webhook can be unauthenticated -- a value like
+# "../../other-ns/pods/x" would otherwise be normalized by httpx into a
+# request outside the namespace the scope check just approved, and "x?watch=1"
+# would inject a query. Refusing anything that is not a legal object name
+# closes both, leaving RBAC as the second boundary rather than the only one.
+_OBJECT_NAME = re.compile(r"^[a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?$")
+
+
+def _segment(name: str) -> str:
+    """Validate an alert-supplied name before it becomes a path segment."""
+    if not isinstance(name, str) or not _OBJECT_NAME.match(name) or ".." in name:
+        raise KubernetesAPIError(f"refusing invalid Kubernetes object name {name!r}")
+    return name
 
 
 # --------------------------------------------------------------------------
@@ -190,6 +208,7 @@ def redact_pod_spec(spec: dict[str, Any]) -> dict[str, Any]:
         for container in containers:
             if isinstance(container, dict):
                 _redact_env(container)
+                _redact_inline_values(container)
     return redact_object(out)
 
 
@@ -200,6 +219,36 @@ def _redact_env(container: dict[str, Any]) -> None:
     for entry in env:
         if isinstance(entry, dict) and "value" in entry:
             entry["value"] = REDACTED
+
+
+# Container fields that carry inline literals with no key/value split to hide
+# behind. `--db-password=hunter2` and `mysql -phunter2` are common enough that
+# argv is treated as a value, not a key: element count survives (the shape is
+# still visible) but every element is blanked. Covers probe/lifecycle
+# `exec.command` too, since the walk below recurses.
+_ARGV_KEYS = ("command", "args")
+
+
+def _redact_inline_values(node: Any) -> None:
+    """Blank argv lists and HTTP header values anywhere inside a container.
+
+    Probe and lifecycle ``httpGet.httpHeaders`` entries are ``{name, value}``
+    pairs, and ``Authorization: Bearer ...`` on a liveness probe is exactly the
+    kind of literal this boundary exists for. Header *names* are kept.
+    """
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key in _ARGV_KEYS and isinstance(value, list):
+                node[key] = [REDACTED for _ in value]
+            elif key == "httpHeaders" and isinstance(value, list):
+                for header in value:
+                    if isinstance(header, dict) and "value" in header:
+                        header["value"] = REDACTED
+            elif key != "env":
+                _redact_inline_values(value)
+    elif isinstance(node, list):
+        for item in node:
+            _redact_inline_values(item)
 
 
 def redact_object(node: Any) -> Any:
@@ -547,13 +596,15 @@ class KubernetesClient:
     # -- resources ---------------------------------------------------------
 
     async def get_pod(self, namespace: str, name: str) -> dict[str, Any] | None:
-        return await self.get_json(f"/api/v1/namespaces/{namespace}/pods/{name}")
+        return await self.get_json(
+            f"/api/v1/namespaces/{_segment(namespace)}/pods/{_segment(name)}"
+        )
 
     async def list_pods(
         self, namespace: str, label_selector: str, limit: int = 10
     ) -> list[dict[str, Any]]:
         payload = await self.get_json(
-            f"/api/v1/namespaces/{namespace}/pods",
+            f"/api/v1/namespaces/{_segment(namespace)}/pods",
             params={"labelSelector": label_selector, "limit": str(limit)},
         )
         return list((payload or {}).get("items") or [])
@@ -562,24 +613,26 @@ class KubernetesClient:
         self, api_version: str, plural: str, namespace: str, name: str
     ) -> dict[str, Any] | None:
         return await self.get_json(
-            f"{_api_root(api_version)}/namespaces/{namespace}/{plural}/{name}"
+            f"{_api_root(api_version)}/namespaces/{_segment(namespace)}"
+            f"/{plural}/{_segment(name)}"
         )
 
     async def get_node(self, name: str) -> dict[str, Any] | None:
-        return await self.get_json(f"/api/v1/nodes/{name}")
+        return await self.get_json(f"/api/v1/nodes/{_segment(name)}")
 
     async def get_pvc(self, namespace: str, name: str) -> dict[str, Any] | None:
         return await self.get_json(
-            f"/api/v1/namespaces/{namespace}/persistentvolumeclaims/{name}"
+            f"/api/v1/namespaces/{_segment(namespace)}"
+            f"/persistentvolumeclaims/{_segment(name)}"
         )
 
     async def list_events(
         self, namespace: str, involved_object_name: str, limit: int = 50
     ) -> list[ClusterEvent]:
         payload = await self.get_json(
-            f"/api/v1/namespaces/{namespace}/events",
+            f"/api/v1/namespaces/{_segment(namespace)}/events",
             params={
-                "fieldSelector": f"involvedObject.name={involved_object_name}",
+                "fieldSelector": f"involvedObject.name={_segment(involved_object_name)}",
                 "limit": str(limit),
             },
         )
