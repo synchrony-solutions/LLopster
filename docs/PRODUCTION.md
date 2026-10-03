@@ -341,6 +341,54 @@ Flux reconciles:
 One rule per release (or a `label_replace` mapping `name` to `service`) keeps
 each alert pointed at the right repository.
 
+### Reading Flux objects
+
+The labels say *that* a release is failing. Flux has already written *why*
+into the object's status, and with Flux reads enabled the agent fetches it:
+
+```yaml
+agent:
+  clusterContext:
+    enabled: true
+    namespaces: [prod]
+    flux:
+      enabled: true
+      namespaces: [flux-system]   # where HelmReleases/Kustomizations/sources live
+```
+
+This renders a **separate, Flux-only** ClusterRole — `helmreleases`,
+`kustomizations`, the five source kinds and `events`, `get`/`list`/`watch`
+only — bound in `namespaces` plus `flux.namespaces`. Binding it in
+`flux-system` grants no pod or workload reads there. Enabling `flux` without
+`clusterContext.enabled` fails the render.
+
+What the agent resolves and reads:
+
+- **The owner.** Exactly, for a `gotk_resource_info` alert; for a workload
+  alert, from the `helm.toolkit.fluxcd.io/name`/`namespace` (or
+  `kustomize.toolkit.fluxcd.io/*`) labels the controller stamps on the
+  Deployment it applies.
+- **Its source chain**, up to two hops (HelmRelease → HelmChart →
+  HelmRepository, Kustomization → GitRepository).
+- Per object: `status.conditions` with the **full message**, applied vs.
+  attempted revision (HelmRelease v2: the newest `deployed` entry in
+  `status.history` vs. `lastAttemptedRevision`), recent release history,
+  chart/source/URL/ref facts, `driftDetection` mode, failure counters.
+- Events on the owner (drift, upgrade failures) and on any failing source.
+
+What it never copies: HelmRelease `spec.values` and Kustomization
+`postBuild.substitute` (acknowledged as present, contents withheld), and
+credentials in source URLs. `valuesFrom` / `substituteFrom` survive as
+references — the Secret's name, never its contents; `secrets` is not in
+either role.
+
+A run whose HelmRelease or any source in its chain is **suspended** is
+skipped after collection, before any LLM call — the workload-alert
+counterpart of the label check above. A cluster without Flux (the API group is
+not served) records a note on the run and logs a warning; the rest of the run
+is unaffected. API versions are discovered from the server, so Flux
+releases serving HelmRelease `v2beta2` work unchanged.
+
 ## Monitoring LLopster itself
 
 The agent exposes a Prometheus scrape target at `GET /metrics` (runs by processing status, backlog/queue depth, runs created in the trailing hour, estimated trailing-day synthesis spend, and cost-breaker/manual-mode state — all computed from the database at scrape time, so they survive pod restarts). Turn on the bundled ServiceMonitor to have the Prometheus Operator scrape it:

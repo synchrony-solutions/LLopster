@@ -55,6 +55,7 @@ from src.api.trigger_routes import router as trigger_router
 from src.config import config
 from src.db import create_engine, get_sessionmaker, init_schema
 from src.db import repository as repo
+from src.integrations.flux_client import FluxClient
 from src.integrations.github_client import GitHubClient
 from src.integrations.kubernetes_client import (
     CA_CERT_PATH,
@@ -315,18 +316,28 @@ def _build_cluster_collector() -> tuple[
 
     verify: Any = CA_CERT_PATH if Path(CA_CERT_PATH).exists() else True
     http = httpx.AsyncClient(timeout=10.0, verify=verify)
+    k8s = KubernetesClient(base_url, client=http)
     collector = ClusterStateCollector(
-        KubernetesClient(base_url, client=http),
+        k8s,
         namespaces=config.cluster_context_namespaces,
         all_namespaces=config.cluster_context_all_namespaces,
         max_events=config.cluster_context_max_events,
         include_pod_spec=config.cluster_context_include_pod_spec,
         max_pod_spec_bytes=config.cluster_context_max_pod_spec_bytes,
+        # Same client, same token: Flux objects are custom resources. None
+        # unless agent.clusterContext.flux is on, which is also the only way
+        # the chart binds the Flux role.
+        flux=FluxClient(k8s) if config.cluster_context_flux_enabled else None,
+        flux_namespaces=config.cluster_context_flux_namespaces,
     )
     log.info(
-        "cluster context: ENABLED (read-only) namespaces=%s all_namespaces=%s",
+        "cluster context: ENABLED (read-only) namespaces=%s all_namespaces=%s flux=%s",
         ",".join(config.cluster_context_namespaces) or "-",
         config.cluster_context_all_namespaces,
+        (
+            "on (namespaces: " + (",".join(config.cluster_context_flux_namespaces) or "-") + ")"
+            if config.cluster_context_flux_enabled else "off"
+        ),
     )
     return http, collector
 

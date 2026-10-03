@@ -1,0 +1,136 @@
+id: flux-helmrelease-schema-rejected
+description: >-
+  The checkout HelmRelease will not become Ready after a chart bump to 1.4.3.
+  The upgrade is rejected by the chart's values schema before anything is
+  applied, so the previous release (1.4.2) keeps running and is healthy: no
+  crash loop, no error logs, no metric anomaly. The only evidence of WHAT is
+  wrong is the HelmRelease's own Ready condition message, which Helm wrote and
+  which names the key: `/resources/limits/memory: '512MB' does not match
+  pattern`.
+
+  The codebase is built so the 1.4.3 bump offers several plausible suspects —
+  a new image tag, a new paymentProvider block with retry settings, a PDB.
+  Without the condition message the obvious guess is the new image or the new
+  provider config; `512MB` sits quietly among valid quantities.
+
+  The condition message is Helm's verbatim output for this exact chart
+  (`helm template` against codebase/ produces it; fixing the one value renders
+  clean), so the recorded context is something a real run would collect.
+
+  Control: replay with `cluster_state` removed. The alert then carries only
+  its labels (ready=False, revision) and the `## GitOps resource` block —
+  enough to know a HelmRelease is failing, not why.
+
+# Self-contained fixture.
+service:
+  name: checkout
+  codebase_path: codebase
+  github_repo: example-org/checkout
+
+alert:
+  version: "4"
+  status: firing
+  receiver: agent-webhook
+  groupLabels:
+    alertname: FluxHelmReleaseNotReady
+  alerts:
+    - status: firing
+      labels:
+        alertname: FluxHelmReleaseNotReady
+        severity: warning
+        service: checkout
+        llopster_managed: "true"
+        # gotk_resource_info, as Flux's reference kube-state-metrics config
+        # exports it; namespace/pod/job/instance are kube-state-metrics' own.
+        customresource_group: helm.toolkit.fluxcd.io
+        customresource_kind: HelmRelease
+        customresource_version: v2
+        exported_namespace: prod
+        name: checkout
+        ready: "False"
+        revision: 1.4.2
+        chart_name: checkout
+        chart_app_version: 3.1.4
+        chart_source_name: example-charts
+        namespace: monitoring
+        pod: kube-prometheus-stack-kube-state-metrics-7c9d5f-xk2lp
+        job: kube-state-metrics
+        instance: 10.0.3.17:8080
+      annotations:
+        summary: HelmRelease prod/checkout is not ready
+        description: >-
+          Flux HelmRelease prod/checkout has reported Ready=False for more
+          than 10 minutes.
+      startsAt: "2026-10-03T14:00:00.000Z"
+      endsAt: "0001-01-01T00:00:00Z"
+      generatorURL: "http://localhost:9090/graph?g0.expr=gotk_resource_info%7Bcustomresource_kind%3D%22HelmRelease%22%2Cexported_namespace%3D%22prod%22%2Cname%3D%22checkout%22%2Cready%3D%22False%22%7D%20%3D%3D%201&g0.tab=1"
+
+recorded_context:
+  # The running 1.4.2 pods are healthy and the rejected upgrade never ran, so
+  # there is nothing in the workload's logs.
+  log_lines: []
+  metric_samples:
+    - metric:
+        __name__: gotk_resource_info
+        customresource_kind: HelmRelease
+        exported_namespace: prod
+        name: checkout
+        ready: "False"
+      value: 1
+  cluster_state:
+    namespace: prod
+    objects_queried: [HelmRelease/checkout, HelmChart/prod-checkout]
+    gitops:
+      resolved_from: alert labels
+      objects:
+        - kind: HelmRelease
+          namespace: prod
+          name: checkout
+          api_version: helm.toolkit.fluxcd.io/v2
+          conditions:
+            - type: Ready
+              status: "False"
+              reason: UpgradeFailed
+              message: |-
+                Helm upgrade failed for release prod/checkout with chart checkout@1.4.3: values don't meet the specifications of the schema(s) in the following chart(s):
+                checkout:
+                - at '/resources/limits/memory': '512MB' does not match pattern '^[0-9]+(Ki|Mi|Gi)$'
+            - type: Released
+              status: "False"
+              reason: UpgradeFailed
+              message: Helm upgrade failed for release prod/checkout with chart checkout@1.4.3
+          applied_revision: 1.4.2
+          attempted_revision: 1.4.3
+          releases:
+            - {chart_version: 1.4.2, app_version: 3.1.4, status: deployed, last_deployed: "2026-09-18T10:12:00Z"}
+            - {chart_version: 1.4.1, app_version: 3.1.4, status: superseded, last_deployed: "2026-09-02T08:40:00Z"}
+          facts:
+            chart: checkout (version constraint 1.4.x)
+            chart source: HelmRepository/example-charts
+            driftDetection: disabled
+            upgradeFailures: "3"
+            failures: "3"
+            lastAttemptedReleaseAction: upgrade
+          source: {kind: HelmChart, namespace: flux-system, name: prod-checkout}
+        - kind: HelmChart
+          namespace: flux-system
+          name: prod-checkout
+          api_version: source.toolkit.fluxcd.io/v1
+          conditions:
+            - {type: Ready, status: "True", reason: ChartPullSucceeded, message: "pulled 'checkout' chart with version '1.4.3'"}
+          applied_revision: 1.4.3
+          facts:
+            chart: checkout
+            version constraint: 1.4.x
+      events:
+        - involved_object: HelmRelease/checkout
+          reason: UpgradeFailed
+          message: "Helm upgrade failed for release prod/checkout with chart checkout@1.4.3: values don't meet the specifications of the schema(s)"
+          count: 3
+
+ground_truth:
+  expect_patch: true
+  expected_files: [values.yaml]
+  # Graded on the Root Cause section. The wrong answers this scenario invites
+  # (the image tag, the retry settings) have no reason to say 512MB.
+  root_cause_keywords: ["512MB"]

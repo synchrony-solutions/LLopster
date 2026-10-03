@@ -231,6 +231,45 @@
                 </table>
                 {% endif %}
 
+                {% if cs.gitops and cs.gitops.objects %}
+                {% set gs = cs.gitops %}
+                <div style="margin-top: 10px;"><strong>GitOps (Flux)</strong> <span class="muted">resolved from {{ gs.resolved_from }}</span></div>
+                {% for o in gs.objects %}
+                <div style="margin-top: 6px;">
+                    <code>{{ o.kind }} {{ o.namespace }}/{{ o.name }}</code>
+                    {% if o.suspended %}<span class="pill pill-skipped">suspended</span>{% endif %}
+                    {% if o.applied_revision or o.attempted_revision %}
+                    <span class="muted">· applied {{ o.applied_revision or '—' }} · attempted {{ o.attempted_revision or '—' }}</span>
+                    {% endif %}
+                    <table class="logs">
+                        {% for c in o.conditions %}
+                        <tr>
+                            <td>{{ c.type }}={{ c.status }}{% if c.reason %} ({{ c.reason }}){% endif %}</td>
+                            <td>{{ c.message or '' }}</td>
+                        </tr>
+                        {% endfor %}
+                        {% for k, v in o.facts.items() %}
+                        <tr><td class="muted">{{ k }}</td><td>{{ v }}</td></tr>
+                        {% endfor %}
+                        {% if o.value_refs %}
+                        <tr><td class="muted">values from</td><td>{{ o.value_refs | join(', ') }}</td></tr>
+                        {% endif %}
+                    </table>
+                </div>
+                {% endfor %}
+                {% if gs.events %}
+                <div style="margin-top: 6px;" class="muted">Flux events</div>
+                <table class="logs">
+                    {% for e in gs.events %}
+                    <tr>
+                        <td class="ts">{{ e.last_timestamp or '—' }}</td>
+                        <td>{{ e.reason }} on {{ e.involved_object }}{% if e.message %} — {{ e.message }}{% endif %}</td>
+                    </tr>
+                    {% endfor %}
+                </table>
+                {% endif %}
+                {% endif %}
+
                 {% if cs.notes %}
                 <div style="margin-top: 10px;">
                     <strong class="muted">Not collected:</strong>

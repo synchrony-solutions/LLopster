@@ -24,6 +24,26 @@ ships image tag `X.Y.Z`. The release workflow refuses to publish if the pushed
 - **Suspended Flux objects are skipped before any LLM call**, with a reason
   naming the object. Suspension is an operator holding reconciliation on
   purpose; no patch can take effect until it is resumed.
+- **Read-only Flux object access** (`agent.clusterContext.flux`, issue #24
+  part A). With it on, the agent fetches the HelmRelease or Kustomization
+  that delivers what an alert is about — exactly from a Flux alert's labels,
+  or from the ownership labels on the workload — plus its source chain, and
+  gives both LLM stages a `## GitOps state` block: full condition messages,
+  applied vs. attempted revision, release history, drift mode, and Flux
+  events. A suspended release or source found this way skips the run before
+  any LLM call.
+  - **Off by default**, and a **separate Flux-only ClusterRole** bound in
+    `namespaces` + `flux.namespaces`, so a `flux-system` binding grants no
+    workload reads. Enforced by `scripts/check_cluster_rbac.py`.
+  - Projections only: inline `spec.values` and `postBuild.substitute` are
+    never copied; `valuesFrom`/`substituteFrom` survive as names.
+  - API versions are discovered (HelmRelease `v2` or `v2beta2`); a cluster
+    without Flux records a note, not an error.
+  - Shown on the run detail page; stored in `cluster_state_json` (no
+    migration).
+- Eval scenario `flux-helmrelease-schema-rejected`: an upgrade rejected by
+  the chart's values schema, where the HelmRelease condition message is the
+  only evidence of which value is wrong.
 
 ### Changed
 
@@ -34,6 +54,13 @@ ships image tag `X.Y.Z`. The release workflow refuses to publish if the pushed
 
 ### Fixed
 
+- **Runs with a lookback override kept their cluster state.** The processor
+  rebuilt the context collector for a per-run lookback (manual triggers)
+  without passing the cluster collector through, so those runs silently had
+  no `## Cluster state` at all. Introduced with cluster access in 1.3.0.
+- Multi-line controller condition messages (Helm lists each schema violation
+  on its own `- at '/path'` line) are indented under their condition in the
+  prompt instead of reading as sibling conditions.
 - **Eval replays no longer show the model the scenario's name.** Both LLM
   prompts print the codebase root, and a scenario that ships its own codebase
   was replayed in place — `eval/scenarios/<scenario-id>/codebase`, where the
@@ -43,7 +70,6 @@ ships image tag `X.Y.Z`. The release workflow refuses to publish if the pushed
   `/codebases/<name>`. Results recorded before this fix for
   `crashloop-oomkilled-no-logs`, `oci-chart-undeliverable-patch` and
   `invisible-chart-layer-override` were measured with the leak present.
-
 
 ## [1.3.0] - 2026-10-03
 

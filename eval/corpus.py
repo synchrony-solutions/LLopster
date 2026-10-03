@@ -86,7 +86,8 @@ from pathlib import Path
 import yaml
 
 from src.agent.alert_handler import ParsedAlert, parse_alertmanager_payload
-from src.agent.cluster_state import ClusterState
+from src.agent.cluster_state import ClusterState, GitOpsState
+from src.integrations.flux_client import FluxObjectState, FluxRef, FluxRelease
 from src.integrations.kubernetes_client import (
     ClusterEvent,
     ContainerState,
@@ -221,6 +222,52 @@ def _parse_cluster_state(raw: object) -> ClusterState | None:
         ],
         objects_queried=[str(o) for o in raw.get("objects_queried") or []],
         notes=[str(n) for n in raw.get("notes") or []],
+        gitops=_parse_recorded_gitops(raw.get("gitops")),
+    )
+
+
+def _parse_recorded_gitops(raw: object) -> GitOpsState | None:
+    """A recorded `gitops` block, built into the collector's own dataclasses.
+
+    Objects are recorded as the *projection* (FluxObjectState fields), never
+    as raw Flux objects -- the same boundary the live client enforces, so a
+    scenario cannot hand the model a field the collector would have withheld.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError("recorded_context.cluster_state.gitops must be a mapping")
+    objects = []
+    for o in raw.get("objects") or []:
+        src = o.get("source")
+        objects.append(FluxObjectState(
+            kind=str(o["kind"]),
+            name=str(o["name"]),
+            namespace=str(o["namespace"]),
+            api_version=str(o.get("api_version", "")),
+            suspended=bool(o.get("suspended", False)),
+            conditions=[_parse_recorded_condition(c) for c in o.get("conditions") or []],
+            applied_revision=o.get("applied_revision"),
+            attempted_revision=o.get("attempted_revision"),
+            source=FluxRef(str(src["kind"]), str(src["namespace"]), str(src["name"])) if src else None,
+            facts={str(k): str(v) for k, v in (o.get("facts") or {}).items()},
+            releases=[FluxRelease(**r) for r in o.get("releases") or []],
+            value_refs=[str(v) for v in o.get("value_refs") or []],
+        ))
+    return GitOpsState(
+        resolved_from=str(raw.get("resolved_from", "alert labels")),
+        objects=objects,
+        events=[
+            ClusterEvent(
+                involved_object=str(e.get("involved_object", "")),
+                type=e.get("type", "Warning"),
+                reason=e.get("reason"),
+                message=e.get("message"),
+                count=int(e.get("count", 1)),
+                last_timestamp=None,
+            )
+            for e in raw.get("events") or []
+        ],
     )
 
 

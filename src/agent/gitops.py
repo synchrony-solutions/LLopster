@@ -101,10 +101,14 @@ def gitops_ref_from_alert(alert: ParsedAlert) -> GitOpsResourceRef | None:
     )
 
 
-def suspended_skip_reason(ref: GitOpsResourceRef) -> str:
-    """The skip reason for a suspended object, worded for the dashboard."""
+def suspended_skip_reason(display: str) -> str:
+    """The skip reason for a suspended object, worded for the dashboard.
+
+    Takes the display name (``Flux HelmRelease prod/api``) so the label path
+    and the post-collection path word it identically.
+    """
     return (
-        f"{ref.display} is suspended (spec.suspend: true) — reconciliation has "
+        f"{display} is suspended (spec.suspend: true) — reconciliation has "
         "been paused deliberately, so no patch can take effect until an "
         "operator resumes it"
     )

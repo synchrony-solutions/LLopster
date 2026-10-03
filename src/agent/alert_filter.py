@@ -89,7 +89,7 @@ def should_skip(
     # read on the dashboard than "unmapped service".
     gitops_ref = gitops_ref_from_alert(alert)
     if gitops_ref is not None and gitops_ref.suspended:
-        return SkipDecision(True, suspended_skip_reason(gitops_ref))
+        return SkipDecision(True, suspended_skip_reason(gitops_ref.display))
 
     # Service-registry rejection. The agent can't generate a patch for a
     # codebase it doesn't know about; surface this clearly rather than

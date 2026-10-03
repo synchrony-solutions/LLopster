@@ -8,7 +8,7 @@ from pathlib import Path
 from anthropic import AsyncAnthropic
 
 from src.agent.alert_handler import strip_url_credentials
-from src.agent.cluster_state import format_cluster_state
+from src.agent.cluster_state import format_cluster_state, has_gitops_state
 from src.agent.gitops import format_gitops_ref, gitops_ref_from_alert
 from src.agent.context_collector import AlertContext
 from src.agent.dedup import PreviousAttempt
@@ -403,9 +403,11 @@ def _format_alert_context(
     for s in ctx.metric_samples:
         lines.append(f"- {s.metric} = {s.value}")
     gitops_ref = gitops_ref_from_alert(a)
-    if gitops_ref is not None:
+    if gitops_ref is not None and not has_gitops_state(ctx.cluster_state):
         # Derived from the alert alone, so present whether or not cluster
-        # access is on. Volatile half, like everything per-alert.
+        # access is on -- unless the Flux objects themselves were read, in
+        # which case `## GitOps state` below supersedes it. Volatile half,
+        # like everything per-alert.
         lines += [""]
         lines += format_gitops_ref(gitops_ref)
     if ctx.cluster_state is not None:

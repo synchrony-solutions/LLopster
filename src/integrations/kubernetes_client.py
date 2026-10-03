@@ -57,6 +57,18 @@ OWNER_KINDS: dict[tuple[str, str], str] = {
     ("batch/v1", "CronJob"): "cronjobs",
 }
 
+GITOPS_LABEL_PREFIXES = ("helm.toolkit.fluxcd.io/", "kustomize.toolkit.fluxcd.io/")
+
+
+def gitops_labels(obj: dict[str, Any]) -> dict[str, str]:
+    """An object's Flux ownership labels, and nothing else from its metadata."""
+    labels = (obj.get("metadata") or {}).get("labels") or {}
+    return {
+        k: str(v) for k, v in labels.items()
+        if isinstance(k, str) and k.startswith(GITOPS_LABEL_PREFIXES)
+    }
+
+
 # pod -> ReplicaSet -> Deployment is 2 hops; CronJob -> Job -> Pod is 2. Four
 # bounds any real chain and makes an ownerReference cycle terminate.
 MAX_OWNER_DEPTH = 4
@@ -101,6 +113,12 @@ class OwnerRef:
     # OWNER_KINDS, so the chain stops here. Recorded rather than dropped: the
     # name of an unreadable owner is still a diagnosis.
     resolved: bool = True
+    # The owner's Flux ownership labels (helm.toolkit.fluxcd.io/*,
+    # kustomize.toolkit.fluxcd.io/*), when it carries any. helm-controller
+    # stamps them on the Deployment it renders, not on the pods, so this is
+    # how a workload alert finds its HelmRelease. Filtered to those prefixes:
+    # nothing else from the owner's metadata is kept.
+    gitops_labels: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -677,6 +695,7 @@ class KubernetesClient:
             if parent is None:
                 ref.resolved = False
                 break
+            ref.gitops_labels = gitops_labels(parent)
             current = parent
         return chain
 

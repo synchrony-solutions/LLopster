@@ -19,6 +19,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
 
 from src.agent.alert_filter import parse_extra_ignore_setting, should_skip
+from src.agent.gitops import suspended_skip_reason
 from src.agent.alert_handler import ParsedAlert
 from src.agent.context_collector import ContextCollector
 from src.agent.cost_breaker import check_cost_breaker
@@ -329,6 +330,9 @@ async def process_alert(
                 lookback_minutes=effective_lookback,
                 max_log_lines=collector.max_log_lines,
                 scope_labels=collector.scope_labels,
+                # Without this, any run with a lookback override (manual
+                # triggers) silently lost cluster -- and Flux -- state.
+                cluster=collector.cluster,
             )
             if lookback_minutes is not None
             else collector
@@ -339,6 +343,23 @@ async def process_alert(
             await repo.record_collected_context(
                 session, run_id, ctx, lookback_minutes=effective_lookback,
             )
+
+        # ---- Suspended delivery (Flux) ------------------------------------
+        # The pre-filter catches a suspended object an alert names in its own
+        # labels; this catches the rest -- a workload alert whose HelmRelease,
+        # or a source in its chain, is suspended. Either way an operator is
+        # holding reconciliation on purpose and no patch can take effect, so
+        # stop before investigation spends anything. Context is already
+        # recorded, so the dashboard shows what was found.
+        if ctx.cluster_state is not None and ctx.cluster_state.gitops is not None:
+            held = ctx.cluster_state.gitops.suspended
+            if held:
+                obj = held[0]
+                reason = suspended_skip_reason(f"Flux {obj.kind} {obj.namespace}/{obj.name}")
+                log.info("[%s] gitops skip: %s", run_id, reason)
+                async with sessionmaker() as session:
+                    await repo.update_status(session, run_id, "skipped", error=reason)
+                return
 
         # ---- Investigation (Sonnet) -------------------------------------
         # Reads alert + logs + metrics + codebase OUTLINE (paths + line
