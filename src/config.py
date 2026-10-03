@@ -57,6 +57,16 @@ class Config:
     cluster_context_max_events: int = int(os.getenv("CLUSTER_CONTEXT_MAX_EVENTS", "20"))
     cluster_context_include_pod_spec: bool = os.getenv("CLUSTER_CONTEXT_INCLUDE_POD_SPEC", "true").lower() in {"true", "1", "yes", "on"}
     cluster_context_max_pod_spec_bytes: int = int(os.getenv("CLUSTER_CONTEXT_MAX_POD_SPEC_BYTES", "8000"))
+    # Flux objects (issue #24), read through the same client. Only meaningful
+    # with cluster_context_enabled. `flux_namespaces` are where Flux objects
+    # live beyond `cluster_context_namespaces` (usually flux-system); the
+    # chart binds a Flux-only role there, so workloads stay unreadable.
+    cluster_context_flux_enabled: bool = os.getenv("CLUSTER_CONTEXT_FLUX_ENABLED", "false").lower() in {"true", "1", "yes", "on"}
+    cluster_context_flux_namespaces: tuple[str, ...] = tuple(
+        ns.strip()
+        for ns in os.getenv("CLUSTER_CONTEXT_FLUX_NAMESPACES", "").split(",")
+        if ns.strip()
+    )
 
     # Per-service codebase + GitHub repo lookup. See config/services.yaml.
     services_config_path: str = os.getenv("SERVICES_CONFIG", "config/services.yaml")

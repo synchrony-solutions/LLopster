@@ -175,3 +175,12 @@ objects they create here are not, so two installs would otherwise collide.
 {{- define "llopster.clusterContext.roleName" -}}
 {{- printf "%s-cluster-reader-%s" (include "llopster.agent.serviceAccountName" .) .Release.Namespace | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
+
+{{/*
+Name for the Flux-only RBAC objects (issue #24). Separate from the core role
+so binding it where Flux objects live (typically flux-system) grants no pod,
+node or workload reads there.
+*/}}
+{{- define "llopster.clusterContext.fluxRoleName" -}}
+{{- printf "%s-flux-reader-%s" (include "llopster.agent.serviceAccountName" .) .Release.Namespace | trunc 63 | trimSuffix "-" -}}
+{{- end -}}

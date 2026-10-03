@@ -300,6 +300,12 @@ spec:
               value: {{ .Values.agent.clusterContext.includePodSpec | quote }}
             - name: CLUSTER_CONTEXT_MAX_POD_SPEC_BYTES
               value: {{ .Values.agent.clusterContext.maxPodSpecBytes | quote }}
+            {{- if .Values.agent.clusterContext.flux.enabled }}
+            - name: CLUSTER_CONTEXT_FLUX_ENABLED
+              value: "true"
+            - name: CLUSTER_CONTEXT_FLUX_NAMESPACES
+              value: {{ join "," .Values.agent.clusterContext.flux.namespaces | quote }}
+            {{- end }}
             {{- end }}
             - name: ANTHROPIC_API_KEY
               valueFrom:
