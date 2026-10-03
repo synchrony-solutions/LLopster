@@ -25,6 +25,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from src.agent.alert_handler import ParsedAlert
+from src.agent.gitops import gitops_ref_from_alert, suspended_skip_reason
 from src.services_registry import ServiceRegistry
 
 
@@ -80,6 +81,15 @@ def should_skip(
         ignore |= {n.strip() for n in extra_ignore_alertnames if n and n.strip()}
     if alert.alertname in ignore:
         return SkipDecision(True, f"alertname {alert.alertname!r} is in the ignore list")
+
+    # A suspended Flux object is a human deliberately holding reconciliation.
+    # No patch can take effect until someone resumes it, so this is decided
+    # from the alert's own labels before anything is spent -- and ahead of
+    # the service check, because "suspended" is the more useful reason to
+    # read on the dashboard than "unmapped service".
+    gitops_ref = gitops_ref_from_alert(alert)
+    if gitops_ref is not None and gitops_ref.suspended:
+        return SkipDecision(True, suspended_skip_reason(gitops_ref.display))
 
     # Service-registry rejection. The agent can't generate a patch for a
     # codebase it doesn't know about; surface this clearly rather than

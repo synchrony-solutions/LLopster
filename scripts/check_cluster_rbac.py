@@ -44,6 +44,21 @@ FORBIDDEN_RESOURCES = {"secrets"}
 
 RBAC_KINDS = {"ClusterRole", "Role", "ClusterRoleBinding", "RoleBinding"}
 
+# The Flux role (issue #24) is bound where Flux objects live -- typically
+# flux-system -- so it must grant Flux objects and their events and nothing
+# else. A pod or workload rule here would quietly widen the agent's reach
+# into every namespace the Flux role is bound in.
+FLUX_ALLOWED = {
+    ("helm.toolkit.fluxcd.io", "helmreleases"),
+    ("kustomize.toolkit.fluxcd.io", "kustomizations"),
+    ("source.toolkit.fluxcd.io", "gitrepositories"),
+    ("source.toolkit.fluxcd.io", "ocirepositories"),
+    ("source.toolkit.fluxcd.io", "helmrepositories"),
+    ("source.toolkit.fluxcd.io", "helmcharts"),
+    ("source.toolkit.fluxcd.io", "buckets"),
+    ("", "events"),
+}
+
 
 def missing_dependencies(chart_dir: str) -> list[str]:
     """Declared subcharts with no tarball in charts/.
@@ -85,6 +100,27 @@ def render(chart_dir: str, *sets: str, show_only: str | None = None) -> list[dic
 
 def fail(msg: str, failures: list[str]) -> None:
     failures.append(msg)
+
+
+def is_flux(doc: dict) -> bool:
+    return "-flux-reader-" in (doc.get("metadata") or {}).get("name", "")
+
+
+def check_flux_scope(docs: list[dict], failures: list[str]) -> None:
+    roles = [d for d in docs if d.get("kind") == "ClusterRole" and is_flux(d)]
+    if len(roles) != 1:
+        fail(f"expected exactly one Flux ClusterRole, got {len(roles)}", failures)
+    for role in roles:
+        for rule in role.get("rules") or []:
+            for group in rule.get("apiGroups") or []:
+                for resource in rule.get("resources") or []:
+                    if (group, resource) not in FLUX_ALLOWED:
+                        fail(
+                            f"Flux ClusterRole grants {group or 'core'}/{resource} -- it "
+                            "is bound where Flux objects live, so it may grant Flux "
+                            "objects and events only",
+                            failures,
+                        )
 
 
 def check_read_only(docs: list[dict], failures: list[str]) -> None:
@@ -188,6 +224,67 @@ def main() -> int:
             )
         for rule in [d for d in agent if d.get("kind") in RBAC_KINDS]:
             fail(f"unexpected RBAC object {rule['kind']} in the agent template", failures)
+
+    # The core-only renders above must not carry a Flux role.
+    if any(is_flux(d) for d in scoped + wide):
+        fail("flux.enabled=false rendered Flux RBAC", failures)
+
+    # 5. Flux, namespace-scoped: Flux role bound in namespaces + flux.namespaces
+    #    (deduplicated); the core role still bound only in `namespaces`.
+    flux_scoped = render(
+        chart_dir,
+        "agent.clusterContext.enabled=true",
+        "agent.clusterContext.namespaces={demo-app,order-service}",
+        "agent.clusterContext.flux.enabled=true",
+        "agent.clusterContext.flux.namespaces={flux-system,demo-app}",
+        show_only="templates/cluster-rbac.yaml",
+    )
+    check_read_only(flux_scoped, failures)
+    check_flux_scope(flux_scoped, failures)
+    flux_bound = sorted(
+        d["metadata"]["namespace"] for d in flux_scoped
+        if d.get("kind") == "RoleBinding" and is_flux(d)
+    )
+    if flux_bound != ["demo-app", "flux-system", "order-service"]:
+        fail(f"expected Flux RoleBindings in the namespace union, got {flux_bound}", failures)
+    core_bound = sorted(
+        d["metadata"]["namespace"] for d in flux_scoped
+        if d.get("kind") == "RoleBinding" and not is_flux(d)
+    )
+    if core_bound != ["demo-app", "order-service"]:
+        fail(
+            f"core role bound in {core_bound} -- flux.namespaces must never widen "
+            "pod/workload reads",
+            failures,
+        )
+
+    # 6. Flux, cluster-wide: one ClusterRoleBinding per role, no RoleBindings.
+    flux_wide = render(
+        chart_dir,
+        "agent.clusterContext.enabled=true",
+        "agent.clusterContext.allNamespaces=true",
+        "agent.clusterContext.flux.enabled=true",
+        show_only="templates/cluster-rbac.yaml",
+    )
+    check_read_only(flux_wide, failures)
+    check_flux_scope(flux_wide, failures)
+    if len([d for d in flux_wide if d.get("kind") == "ClusterRoleBinding"]) != 2:
+        fail("allNamespaces + flux should render exactly two ClusterRoleBindings", failures)
+    if any(d.get("kind") == "RoleBinding" for d in flux_wide):
+        fail("allNamespaces + flux should render no RoleBindings", failures)
+
+    # 7. Flux without cluster context must fail the render.
+    proc = subprocess.run(
+        ["helm", "template", "llopster", chart_dir, "-n", "llopster",
+         "--set", "agent.clusterContext.flux.enabled=true"],
+        capture_output=True, text=True,
+    )
+    if proc.returncode == 0:
+        fail(
+            "flux.enabled=true without clusterContext.enabled rendered "
+            "successfully -- it should fail rather than read nothing",
+            failures,
+        )
 
     # 4. Enabled but scoped to nothing must fail the render, not grant nothing.
     proc = subprocess.run(

@@ -17,6 +17,9 @@
        tempted to ask for it — the answer stays no, source-merge the values
        instead.
 */ -}}
+{{- if and .Values.agent.clusterContext.flux.enabled (not .Values.agent.clusterContext.enabled) }}
+{{- fail "agent.clusterContext.flux.enabled=true requires agent.clusterContext.enabled=true: Flux objects are read through the same read-only client, and without it nothing would be read while the values claim it is." }}
+{{- end }}
 {{- if .Values.agent.clusterContext.enabled }}
 {{- if and (not .Values.agent.clusterContext.allNamespaces) (not .Values.agent.clusterContext.namespaces) }}
 {{- fail "agent.clusterContext.enabled=true grants nothing: set agent.clusterContext.namespaces to the namespaces whose alerts this agent handles, or agent.clusterContext.allNamespaces=true. As configured every alert would be reported as out of scope." }}
@@ -93,6 +96,79 @@ subjects:
   - kind: ServiceAccount
     name: {{ include "llopster.agent.serviceAccountName" $ }}
     namespace: {{ $.Release.Namespace }}
+{{- end }}
+{{- end }}
+{{- if .Values.agent.clusterContext.flux.enabled }}
+---
+# Flux objects (issue #24). A separate ClusterRole on purpose: Flux objects
+# usually live in flux-system, and binding the core role there would also
+# grant pod/node/workload reads the agent has no use for. Same invariants as
+# above -- get/list/watch only, never `secrets` -- asserted by
+# scripts/check_cluster_rbac.py. HelmRelease valuesFrom and Kustomization
+# substituteFrom name Secrets; the agent reports those names and never reads
+# the Secrets.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "llopster.clusterContext.fluxRoleName" . }}
+  labels:
+    {{- include "k3s-deployment.labels" . | nindent 4 }}
+    app.kubernetes.io/component: agent
+rules:
+  - apiGroups: ["helm.toolkit.fluxcd.io"]
+    resources: ["helmreleases"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["kustomize.toolkit.fluxcd.io"]
+    resources: ["kustomizations"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["source.toolkit.fluxcd.io"]
+    resources: ["gitrepositories", "ocirepositories", "helmrepositories", "helmcharts", "buckets"]
+    verbs: ["get", "list", "watch"]
+  # Events on Flux objects: drift detection, upgrade failures and source
+  # fetch errors are reported as events in the object's own namespace, which
+  # the core role is not bound in.
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+{{- if .Values.agent.clusterContext.allNamespaces }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "llopster.clusterContext.fluxRoleName" . }}
+  labels:
+    {{- include "k3s-deployment.labels" . | nindent 4 }}
+    app.kubernetes.io/component: agent
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "llopster.clusterContext.fluxRoleName" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "llopster.agent.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- else }}
+{{- /* Workload namespaces too: a HelmRelease often lives beside the
+     workload it deploys, not in flux-system. */}}
+{{- range $ns := uniq (concat .Values.agent.clusterContext.namespaces .Values.agent.clusterContext.flux.namespaces) }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "llopster.clusterContext.fluxRoleName" $ }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "k3s-deployment.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: agent
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "llopster.clusterContext.fluxRoleName" $ }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "llopster.agent.serviceAccountName" $ }}
+    namespace: {{ $.Release.Namespace }}
+{{- end }}
 {{- end }}
 {{- end }}
 {{- end }}

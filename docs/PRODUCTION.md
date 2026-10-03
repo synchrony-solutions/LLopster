@@ -308,6 +308,87 @@ An unreachable API server, an RBAC denial, or a pod deleted between the alert
 firing and collection degrades to a warning plus a note on the run. The
 existing logs+metrics context is unaffected and the run completes normally.
 
+## Flux delivery alerts
+
+Alerts built on Flux's `gotk_resource_info` series (from the kube-state-metrics
+custom-resource config in
+[fluxcd/flux2-monitoring-example](https://github.com/fluxcd/flux2-monitoring-example))
+are recognised by their `customresource_group` label. The agent reads the
+object they name — kind, namespace, name, `ready`, `suspended`, revision and
+chart/source labels — straight off the alert, with or without cluster access,
+and gives it to both LLM stages as a `## GitOps resource` block.
+
+A **suspended** object (`suspended="true"`) is skipped before any LLM call:
+suspension is an operator holding reconciliation on purpose, and no patch can
+take effect until it is resumed.
+
+**Routing needs an explicit `service` label.** These series carry the
+kube-state-metrics target's own `service` label, which is not in
+`services.yaml`, so an unlabelled rule is skipped as an unmapped service. Set
+`service` on the rule to the `services.yaml` entry whose repository holds what
+Flux reconciles:
+
+```yaml
+- alert: FluxHelmReleaseNotReady
+  expr: gotk_resource_info{customresource_kind="HelmRelease", exported_namespace="prod", name="api", ready="False"} == 1
+  for: 10m
+  labels:
+    severity: warning
+    service: api                 # services.yaml key → the repo the PR targets
+    llopster_managed: "true"
+```
+
+One rule per release (or a `label_replace` mapping `name` to `service`) keeps
+each alert pointed at the right repository.
+
+### Reading Flux objects
+
+The labels say *that* a release is failing. Flux has already written *why*
+into the object's status, and with Flux reads enabled the agent fetches it:
+
+```yaml
+agent:
+  clusterContext:
+    enabled: true
+    namespaces: [prod]
+    flux:
+      enabled: true
+      namespaces: [flux-system]   # where HelmReleases/Kustomizations/sources live
+```
+
+This renders a **separate, Flux-only** ClusterRole — `helmreleases`,
+`kustomizations`, the five source kinds and `events`, `get`/`list`/`watch`
+only — bound in `namespaces` plus `flux.namespaces`. Binding it in
+`flux-system` grants no pod or workload reads there. Enabling `flux` without
+`clusterContext.enabled` fails the render.
+
+What the agent resolves and reads:
+
+- **The owner.** Exactly, for a `gotk_resource_info` alert; for a workload
+  alert, from the `helm.toolkit.fluxcd.io/name`/`namespace` (or
+  `kustomize.toolkit.fluxcd.io/*`) labels the controller stamps on the
+  Deployment it applies.
+- **Its source chain**, up to two hops (HelmRelease → HelmChart →
+  HelmRepository, Kustomization → GitRepository).
+- Per object: `status.conditions` with the **full message**, applied vs.
+  attempted revision (HelmRelease v2: the newest `deployed` entry in
+  `status.history` vs. `lastAttemptedRevision`), recent release history,
+  chart/source/URL/ref facts, `driftDetection` mode, failure counters.
+- Events on the owner (drift, upgrade failures) and on any failing source.
+
+What it never copies: HelmRelease `spec.values` and Kustomization
+`postBuild.substitute` (acknowledged as present, contents withheld), and
+credentials in source URLs. `valuesFrom` / `substituteFrom` survive as
+references — the Secret's name, never its contents; `secrets` is not in
+either role.
+
+A run whose HelmRelease or any source in its chain is **suspended** is
+skipped after collection, before any LLM call — the workload-alert
+counterpart of the label check above. A cluster without Flux (the API group is
+not served) records a note on the run and logs a warning; the rest of the run
+is unaffected. API versions are discovered from the server, so Flux
+releases serving HelmRelease `v2beta2` work unchanged.
+
 ## Monitoring LLopster itself
 
 The agent exposes a Prometheus scrape target at `GET /metrics` (runs by processing status, backlog/queue depth, runs created in the trailing hour, estimated trailing-day synthesis spend, and cost-breaker/manual-mode state — all computed from the database at scrape time, so they survive pod restarts). Turn on the bundled ServiceMonitor to have the Prometheus Operator scrape it:

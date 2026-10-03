@@ -493,6 +493,19 @@ agent:
     maxEvents: 20
     includePodSpec: true
     maxPodSpecBytes: 8000
+    # Read Flux objects too (issue #24): HelmReleases, Kustomizations and their
+    # sources, for the controller's own diagnosis in .status.conditions,
+    # applied vs attempted revisions, suspension and drift events. Requires
+    # enabled=true. Renders a SEPARATE Flux-only ClusterRole, so granting it in
+    # flux-system grants nothing else there.
+    flux:
+      enabled: false
+      # Namespaces where Flux objects live, when that is not one of
+      # `namespaces` above -- usually flux-system, or a per-tenant namespace.
+      # The Flux role is bound in these plus `namespaces` (or cluster-wide
+      # under allNamespaces). Workloads are NOT readable here unless the
+      # namespace is also in `namespaces`.
+      namespaces: []
 
   # Notification channel for patch proposals.
   #   provider: slack  → Slack incoming webhook (agent.secrets.SLACK_WEBHOOK_URL)

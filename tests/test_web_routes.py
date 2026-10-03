@@ -573,3 +573,30 @@ async def test_run_detail_renders_an_empty_cluster_state_as_nothing_matched(app_
         r = await c.get(f"/runs/{run_id}")
     assert "nothing matched" in r.text
     assert "namespace out of scope" in r.text
+
+
+async def test_run_detail_renders_flux_state_without_inline_values(app_with_db):
+    from src.agent.cluster_state import ClusterState, GitOpsState
+    from src.integrations.flux_client import parse_flux_object
+    from tests.test_flux_client import HELMRELEASE, SECRET
+
+    app, sm = app_with_db
+    hr = parse_flux_object("HelmRelease", HELMRELEASE)
+    hr.suspended = True
+    state = ClusterState(
+        namespace="prod",
+        objects_queried=["HelmRelease/api"],
+        gitops=GitOpsState(resolved_from="Deployment/api labels", objects=[hr]),
+    )
+    run_id = await _run_with_cluster_state(sm, state)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        r = await c.get(f"/runs/{run_id}")
+    body = r.text
+    assert "GitOps (Flux)" in body
+    assert "resolved from Deployment/api labels" in body
+    assert "HelmRelease prod/api" in body
+    assert "suspended" in body
+    assert "applied 1.4.1 · attempted 1.4.3" in body
+    assert "field is immutable" in body
+    assert "Secret/api-values (key values.yaml)" in body
+    assert SECRET not in body

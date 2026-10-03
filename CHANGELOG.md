@@ -11,8 +11,57 @@ ships image tag `X.Y.Z`. The release workflow refuses to publish if the pushed
 
 ## [Unreleased]
 
+### Added
+
+- **Flux delivery alerts are recognised from their own labels** (issue #24
+  part C). An alert built on `gotk_resource_info` names the object it is
+  about — kind, namespace, name, `ready`, `suspended`, revision, chart and
+  source — and both LLM stages now receive that as a `## GitOps resource`
+  block, with or without cluster access. Label names follow Flux's reference
+  kube-state-metrics config: the object's namespace is `exported_namespace`,
+  and the `pod`/`namespace`/`service` labels beside it belong to
+  kube-state-metrics.
+- **Suspended Flux objects are skipped before any LLM call**, with a reason
+  naming the object. Suspension is an operator holding reconciliation on
+  purpose; no patch can take effect until it is resumed.
+- **Read-only Flux object access** (`agent.clusterContext.flux`, issue #24
+  part A). With it on, the agent fetches the HelmRelease or Kustomization
+  that delivers what an alert is about — exactly from a Flux alert's labels,
+  or from the ownership labels on the workload — plus its source chain, and
+  gives both LLM stages a `## GitOps state` block: full condition messages,
+  applied vs. attempted revision, release history, drift mode, and Flux
+  events. A suspended release or source found this way skips the run before
+  any LLM call.
+  - **Off by default**, and a **separate Flux-only ClusterRole** bound in
+    `namespaces` + `flux.namespaces`, so a `flux-system` binding grants no
+    workload reads. Enforced by `scripts/check_cluster_rbac.py`.
+  - Projections only: inline `spec.values` and `postBuild.substitute` are
+    never copied; `valuesFrom`/`substituteFrom` survive as names.
+  - API versions are discovered (HelmRelease `v2` or `v2beta2`); a cluster
+    without Flux records a note, not an error.
+  - Shown on the run detail page; stored in `cluster_state_json` (no
+    migration).
+- Eval scenario `flux-helmrelease-missing-crd`: an upgrade Helm rejects
+  because the cluster lacks the ServiceMonitor CRD, with several equally
+  plausible changes in the same chart bump. The HelmRelease condition message
+  is the only evidence of the cause; nothing in the codebase reveals it.
+
+### Changed
+
+- URL-valued alert labels have embedded credentials (`user:token@`) stripped
+  wherever they are rendered into an LLM prompt, including the raw `## Labels`
+  section. Flux exports a GitRepository's `spec.url` as a label, and nothing
+  prevents credentials in it.
+
 ### Fixed
 
+- **Runs with a lookback override kept their cluster state.** The processor
+  rebuilt the context collector for a per-run lookback (manual triggers)
+  without passing the cluster collector through, so those runs silently had
+  no `## Cluster state` at all. Introduced with cluster access in 1.3.0.
+- Multi-line controller condition messages (Helm lists each schema violation
+  on its own `- at '/path'` line) are indented under their condition in the
+  prompt instead of reading as sibling conditions.
 - **Eval replays no longer show the model the scenario's name.** Both LLM
   prompts print the codebase root, and a scenario that ships its own codebase
   was replayed in place — `eval/scenarios/<scenario-id>/codebase`, where the

@@ -4,7 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from src.agent.cluster_state import WORKLOAD_LABELS, alert_label
+from src.agent.alert_handler import alert_label
+from src.agent.cluster_state import WORKLOAD_LABELS
+from src.agent.gitops import gitops_ref_from_alert
 from eval.corpus import (
     DEFAULT_SCENARIOS_DIR,
     GroundTruth,
@@ -41,6 +43,9 @@ EXPECTED_UNDELIVERABLE_IDS = {
 # mid-batch flushes nothing.
 EXPECTED_CLUSTER_STATE_IDS = {
     "crashloop-oomkilled-no-logs",
+    # Flux delivery state (issue #24): the HelmRelease condition message is
+    # the only evidence that the cluster lacks the ServiceMonitor CRD.
+    "flux-helmrelease-missing-crd",
 }
 
 EXPECTED_IDS = (
@@ -293,6 +298,19 @@ def test_recorded_cluster_state_matches_the_object_the_alert_names(scenario):
         ), (
             f"{scenario.id}: recorded pods but the alert names neither a pod nor "
             f"a workload — the collector had nothing to look up"
+        )
+
+    # Flux state, like pods, must be the object the alert names: for a
+    # gotk_resource_info alert that is the labelled object, exactly.
+    ref = gitops_ref_from_alert(scenario.alert)
+    if state.gitops is not None and state.gitops.objects and ref is not None:
+        owner = state.gitops.owner
+        assert (owner.kind, owner.namespace, owner.name) == (ref.kind, ref.namespace, ref.name), (
+            f"{scenario.id}: recorded Flux owner {owner.kind} {owner.namespace}/{owner.name} "
+            f"is not the object the alert names ({ref.display})"
+        )
+        assert state.gitops.resolved_from == "alert labels", (
+            f"{scenario.id}: a Flux alert resolves from its own labels"
         )
 
     for event in state.events:

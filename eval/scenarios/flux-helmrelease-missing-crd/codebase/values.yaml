@@ -1,0 +1,38 @@
+replicaCount: 3
+
+image:
+  repository: ghcr.io/example-org/checkout
+  tag: "3.2.0"
+  pullPolicy: IfNotPresent
+
+# 3.2.0 moves the payment-provider client to its own credentials.
+paymentProvider:
+  endpoint: https://payments.internal.example.org
+  timeoutSeconds: 8
+  maxRetries: 4
+  credentialsSecret: checkout-payment-creds
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+
+metrics:
+  enabled: true
+  port: 9102
+  serviceMonitor:
+    enabled: true
+    interval: 30s
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 256Mi
+  limits:
+    cpu: "1"
+    memory: 512Mi
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2

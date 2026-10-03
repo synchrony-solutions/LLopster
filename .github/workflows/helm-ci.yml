@@ -100,6 +100,11 @@ jobs:
       # which --create-namespace guarantees exists) so the RBAC objects it
       # generates are validated by a real API server — RBAC is exactly the
       # kind of manifest `helm template` cannot tell you is acceptable.
+      # Flux is on too, bound into `default` (which always exists) so the
+      # Flux role's RoleBinding lands outside the release namespace exactly as
+      # a flux-system binding would. kind has no Flux CRDs; RBAC rules naming
+      # them are still accepted, which is the same position as a cluster that
+      # enables this before installing Flux.
       # No --wait: the LLopster agent/dashboard images are not yet published, so
       # their pods can't become Ready in CI. This step validates that every
       # rendered manifest is accepted by a real API server (schema + admission)
@@ -114,7 +119,9 @@ jobs:
             --set loki.bundled=false \
             --set loki.url=http://loki.example:3100 \
             --set agent.clusterContext.enabled=true \
-            --set 'agent.clusterContext.namespaces={llopster}'
+            --set 'agent.clusterContext.namespaces={llopster}' \
+            --set agent.clusterContext.flux.enabled=true \
+            --set 'agent.clusterContext.flux.namespaces={default}'
 
       - name: Show installed resources
         if: always()
