@@ -1,0 +1,142 @@
+id: crashloop-oomkilled-no-logs
+description: >-
+  The ledger worker is CrashLoopBackOff-ing and has produced ZERO log lines —
+  it is OOM-killed while holding a whole 25k-row batch in memory, before
+  anything is flushed.
+
+  The scenario is built so the CODEBASE POINTS AT THE WRONG ANSWER. Reading
+  only the source, the liveness probe is the obvious culprit and the arithmetic
+  is right there: `CACHE_WARM_SECONDS = 45` in worker.py against a probe budget
+  of initialDelaySeconds 5 + periodSeconds 10 x failureThreshold 3 = 35s. The
+  memory envelope (384Mi) looks unremarkable by comparison, and nothing in the
+  source says what the working set actually is.
+
+  Only the pod object corrects it: lastState.terminated.reason=OOMKilled with
+  exitCode 137 and signal 9. A container killed for failing its liveness probe
+  does not look like that.
+
+  Both candidate fixes live in values.yaml, so file targeting cannot separate
+  them — `root_cause_keywords` is what grades the diagnosis (see eval/scoring.py;
+  keywords count on the expect_patch path precisely because of scenarios shaped
+  like this one).
+
+  An earlier draft of this fixture did NOT discriminate: it carried a comment
+  saying the limits were copied from another chart and never re-measured, and
+  paired a 2s cache warm with a 5s initial delay. The control run reached the
+  same answer as the treatment and even asserted "OOMKilled" with no evidence
+  for it. Keep the source pointing away from memory, or this scenario stops
+  testing anything.
+
+# Self-contained fixture: this is not a demo-app bug, and the two competing
+# candidate fixes both have to be visible for the scenario to discriminate.
+service:
+  name: ledger-worker
+  codebase_path: codebase
+  github_repo: example-org/ledger-worker
+
+alert:
+  version: "4"
+  status: firing
+  receiver: agent-webhook
+  groupLabels:
+    alertname: KubePodCrashLooping
+  alerts:
+    - status: firing
+      labels:
+        alertname: KubePodCrashLooping
+        severity: warning
+        service: ledger-worker
+        namespace: payments
+        pod: ledger-worker-6f8b9c4d7-2xqzt
+        container: worker
+      annotations:
+        summary: Pod payments/ledger-worker-6f8b9c4d7-2xqzt is in CrashLoopBackOff
+        description: >-
+          Pod payments/ledger-worker-6f8b9c4d7-2xqzt (container worker) has
+          restarted 9 times in the last 15 minutes and is currently waiting in
+          CrashLoopBackOff.
+      startsAt: "2026-08-29T10:00:00.000Z"
+      endsAt: "0001-01-01T00:00:00Z"
+      generatorURL: "http://localhost:9090/graph?g0.expr=increase%28kube_pod_container_status_restarts_total%5B15m%5D%29%20%3E%205&g0.tab=1"
+      fingerprint: ledger01crash02oom03
+
+recorded_context:
+  # Deliberately empty. The container is killed by the kernel while holding
+  # the batch; nothing is flushed, and the collector's LogQL selector returns
+  # nothing at all. Inventing a helpful log line here would destroy the whole
+  # point of the scenario.
+  log_lines: []
+  metric_samples:
+    # The one series the alert's own g0.expr returns. It says the pod is
+    # restarting; it does not say why.
+    - metric:
+        __name__: kube_pod_container_status_restarts_total
+        namespace: payments
+        pod: ledger-worker-6f8b9c4d7-2xqzt
+        container: worker
+      value: 9
+
+  # Read-only cluster state (issue #23). Present only in this scenario. Drop
+  # this block to reproduce the pre-#23 control run: the collector then builds
+  # no `## Cluster state` section and the model is left choosing between the
+  # memory limit and the liveness probe with nothing to go on.
+  cluster_state:
+    namespace: payments
+    objects_queried:
+      - Pod/ledger-worker-6f8b9c4d7-2xqzt
+      - ReplicaSet/ledger-worker-6f8b9c4d7
+      - Deployment/ledger-worker
+    pods:
+      - name: ledger-worker-6f8b9c4d7-2xqzt
+        namespace: payments
+        phase: Running
+        node_name: ip-10-0-3-91.ec2.internal
+        owner_chain:
+          - kind: ReplicaSet
+            name: ledger-worker-6f8b9c4d7
+          - kind: Deployment
+            name: ledger-worker
+        conditions:
+          - type: Ready
+            status: "False"
+            reason: ContainersNotReady
+            message: "containers with unready status: [worker]"
+        containers:
+          - name: worker
+            image: ghcr.io/example-org/ledger-worker:2.4.0
+            ready: false
+            restart_count: 9
+            state: waiting
+            state_reason: CrashLoopBackOff
+            state_message: "back-off 5m0s restarting failed container=worker"
+            last_state: terminated
+            last_state_reason: OOMKilled
+            last_state_exit_code: 137
+            last_state_signal: 9
+            last_state_finished_at: "2026-08-29T09:58:41Z"
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: "1", memory: 256Mi}
+    events:
+      - involved_object: Pod/ledger-worker-6f8b9c4d7-2xqzt
+        type: Warning
+        reason: BackOff
+        message: "Back-off restarting failed container worker in pod ledger-worker-6f8b9c4d7-2xqzt_payments"
+        count: 24
+    notes:
+      - "node ip-10-0-3-91.ec2.internal not read: nodes are cluster-scoped and this agent is bound to individual namespaces"
+
+ground_truth:
+  expect_patch: true
+  # Both candidate fixes are in values.yaml, so this only proves the agent
+  # reached the right FILE.
+  expected_files: [values.yaml]
+  # This is what proves it reached the right DIAGNOSIS, and it is ONE keyword
+  # on purpose. The container's exit code is readable only from the pod object,
+  # so a run without cluster access cannot produce it except by fabrication.
+  #
+  # "oomkilled" was deliberately REMOVED: a blind control run diagnosed a
+  # liveness-probe failure and then advised the operator to check
+  # `kubectl describe pod` for `reason: OOMKilled` — naming its own blind spot,
+  # which is the opposite of a match. Keywords here must be things a wrong
+  # answer has no reason to produce, not words anyone can speculate.
+  root_cause_keywords: ["137"]

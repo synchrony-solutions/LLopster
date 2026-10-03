@@ -288,3 +288,30 @@ async def test_lineage_scenario_forwards_invisible_layers_to_both_stages(
     # Delivery is direct here, so a pass cannot be credited to that feature.
     assert patcher.generate.call_args.kwargs["delivery"].is_indirect is False
     assert score_run(scenario, run).label == "correct"
+
+
+# ---------------------------------------------------------------------------
+# Recorded cluster state (issue #23)
+# ---------------------------------------------------------------------------
+
+def test_recorded_collector_has_no_cluster_source_without_a_recorded_block():
+    """A scenario with no `cluster_state` must replay as a run with cluster
+    access DISABLED — no block in the prompt at all. Anything else would make
+    the with/without comparison an empty-section artifact rather than a
+    control."""
+    from eval.runner import recorded_collector
+
+    scenario = _scenario_by_id("db-pool-exhausted")
+    assert scenario.cluster_state is None
+    assert recorded_collector(scenario).cluster is None
+
+
+async def test_recorded_cluster_state_reaches_the_alert_context():
+    from src.agent.cluster_state import ClusterState
+    from eval.runner import recorded_collector
+
+    scenario = _scenario_by_id("db-pool-exhausted")
+    scenario.cluster_state = ClusterState(namespace="payments", notes=["recorded"])
+    ctx = await recorded_collector(scenario).collect(scenario.alert)
+    assert ctx.cluster_state is not None
+    assert ctx.cluster_state.namespace == "payments"

@@ -117,3 +117,17 @@ agent:
     - name: order-service
       gitRepo: https://github.com/synchrony-solutions/order-service.git
       branch: main
+
+  # Read-only cluster state, scoped to exactly the two namespaces whose
+  # alerts this agent handles — the same set servicesConfig covers. The dev
+  # cluster is the reference testbed, so this is the configuration the
+  # feature is meant to be evaluated in.
+  #
+  # allNamespaces stays false: node conditions are not readable this way, and
+  # that is the correct trade for a testbed whose alerts are all workload
+  # -scoped. Flip it only if you add node-scoped alerts.
+  clusterContext:
+    enabled: true
+    namespaces:
+      - demo-app
+      - order-service

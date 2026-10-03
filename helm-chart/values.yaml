@@ -455,6 +455,45 @@ agent:
     annotations: {}
     #   eks.amazonaws.com/role-arn: arn:aws:iam::<account-id>:role/<bedrock-role>
 
+  # Read-only Kubernetes cluster-state access (issue #23).
+  #
+  # When enabled the agent reads (GET only) the live objects a firing alert
+  # names — pod container states, exit codes and OOMKilled reasons, the owner
+  # chain, recent Events, PVC binding failures, node conditions — and feeds
+  # them to the LLM alongside Loki logs and Prometheus metrics. This closes
+  # the class of alerts whose answer exists nowhere else: a CrashLoopBackOff
+  # that dies before logging a line has `exitCode`/`reason` and nothing more.
+  #
+  # OFF BY DEFAULT and independently revocable. This is a real new capability
+  # for an LLM-driven agent, not a tuning knob:
+  #   * enabled=false renders no RBAC at all and constructs no client, and
+  #     the agent pod gets no ServiceAccount token mounted.
+  #   * the generated ClusterRole carries get/list/watch and nothing else,
+  #     and never `secrets` — the agent already holds a write-scoped GitHub
+  #     token, and secrets read would make incident context an exfiltration
+  #     surface. Enforced by scripts/check_cluster_rbac.py in chart CI.
+  #   * env values, command/args and probe header values in pod specs are
+  #     redacted before collection, so they reach neither the LLM request
+  #     nor the run record on disk.
+  clusterContext:
+    enabled: false
+    # Namespaces the agent may read, one RoleBinding each. These should be
+    # the namespaces whose alerts this agent handles — usually the same set
+    # as agent.servicesConfig covers. Enabling with an empty list and
+    # allNamespaces=false fails the render rather than granting nothing.
+    namespaces: []
+    # Bind cluster-wide instead (a ClusterRoleBinding). Also the only mode in
+    # which node conditions are readable: nodes are cluster-scoped, so a
+    # per-namespace RoleBinding cannot grant them however many namespaces it
+    # names. Prefer an explicit namespace list where you can.
+    allNamespaces: false
+    # Payload ceilings. This context feeds the metered synthesis prompt, so
+    # both the event list and the pod-spec blob are capped; whatever gets
+    # dropped is recorded on the run rather than silently omitted.
+    maxEvents: 20
+    includePodSpec: true
+    maxPodSpecBytes: 8000
+
   # Notification channel for patch proposals.
   #   provider: slack  → Slack incoming webhook (agent.secrets.SLACK_WEBHOOK_URL)
   #   provider: teams  → Microsoft Teams via a Power Automate Workflows webhook

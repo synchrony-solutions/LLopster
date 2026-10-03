@@ -720,3 +720,43 @@ def test_alert_context_omits_previous_attempt_block_by_default():
     )
     blob = _format_alert_context(ctx)
     assert "Previous fix attempt" not in blob
+
+
+async def test_processor_backoff_can_be_disabled_for_a_replay(sessionmaker_fixture):
+    """`enforce_backoff=False` is the eval harness's path.
+
+    The corpus replays the same frozen alert deliberately and repeatedly. The
+    post-firing backoff guards against re-*firings* costing tokens; a replay is
+    not a re-firing. Left on, a second corpus run inside patch_backoff_minutes
+    (default 60) suppresses every scenario and reports a 0% pass-rate —
+    indistinguishable from a catastrophic regression. Same reasoning as
+    enforce_cost_breaker, which the harness already disables.
+    """
+    sm = sessionmaker_fixture
+    alert = _alert()
+    await _make_done_no_pr_run(sm, alert)
+
+    async with sm() as s:
+        await repo.set_setting(s, "patch_backoff_minutes", "60")
+        current = await repo.create_run_from_alert(s, alert, raw_payload={})
+
+    # collect() raises so the pipeline stops right after the backoff gate; we
+    # only care that the gate was REACHED rather than short-circuiting.
+    collector = MagicMock()
+    collector.collect = AsyncMock(side_effect=RuntimeError("stop here"))
+
+    await process_alert(
+        current.id, alert,
+        sessionmaker=sm,
+        collector=collector,
+        services=_services(),
+        patcher=MagicMock(),
+        github=None,
+        notifier=None,
+        enforce_backoff=False,
+    )
+
+    async with sm() as s:
+        fetched = await repo.get_run(s, current.id)
+    assert fetched.processing_status != "skipped"
+    collector.collect.assert_awaited()

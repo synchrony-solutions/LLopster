@@ -63,9 +63,38 @@ def _run(
 
 def test_correct_when_patch_targets_expected_file():
     diff = "--- a/check_db_pool.py\n+++ b/check_db_pool.py\n@@ -1 +1 @@\n-x\n+y\n"
-    score = score_run(_scenario(), _run(parsed_diff=diff))
+    score = score_run(
+        _scenario(), _run(parsed_diff=diff, root_cause="the connection pool is too small")
+    )
     assert score.label == "correct"
     assert score.patch_proposed and score.targets_expected_file
+
+
+def test_partial_when_right_file_but_root_cause_misses_every_keyword():
+    """Targeting the right file is not the same as the right diagnosis.
+
+    Where a scenario's competing hypotheses live in the SAME file (a memory
+    limit and a liveness probe in one values.yaml), file selection cannot
+    separate them and the keywords are the only thing that can. Declaring
+    keywords used to be silently ignored on this path, so such a scenario
+    graded `correct` for the wrong reason.
+    """
+    diff = "--- a/check_db_pool.py\n+++ b/check_db_pool.py\n@@ -1 +1 @@\n-x\n+y\n"
+    score = score_run(
+        _scenario(keywords=("pool",)),
+        _run(parsed_diff=diff, root_cause="the retry budget is exhausted"),
+    )
+    assert score.label == "partial"
+    assert "wrong diagnosis" in score.reason
+    assert score.targets_expected_file and not score.root_cause_match
+
+
+def test_right_file_alone_is_correct_when_no_keywords_are_declared():
+    """Back-compat: a scenario that declares no keywords is graded exactly as
+    before — file targeting is the whole test."""
+    diff = "--- a/check_db_pool.py\n+++ b/check_db_pool.py\n@@ -1 +1 @@\n-x\n+y\n"
+    score = score_run(_scenario(keywords=()), _run(parsed_diff=diff, root_cause="anything"))
+    assert score.label == "correct"
 
 
 def test_partial_when_patch_targets_wrong_file():
@@ -120,7 +149,7 @@ def test_aggregate_computes_pass_rate():
     diff_ok = "--- a/check_db_pool.py\n+++ b/check_db_pool.py\n@@ -1 +1 @@\n-x\n+y\n"
     diff_wrong = "--- a/check_cache.py\n+++ b/check_cache.py\n@@ -1 +1 @@\n-x\n+y\n"
     scores = [
-        score_run(_scenario(), _run(parsed_diff=diff_ok)),       # correct
+        score_run(_scenario(), _run(parsed_diff=diff_ok, root_cause="pool")),  # correct
         score_run(_scenario(), _run(parsed_diff=diff_wrong)),    # partial
         score_run(_scenario(), _run(parsed_diff=None, affected=[])),  # wrong
     ]
@@ -206,3 +235,43 @@ def test_no_ceiling_keeps_the_old_noise_suppression_grade():
     )
     assert score.label == "wrong"
     assert "should have been skipped" in score.reason
+
+
+def test_diagnosis_grade_ignores_a_keyword_the_model_only_flagged_as_unchecked():
+    """A real control run produced exactly this: it diagnosed a liveness-probe
+    failure, then advised the operator to check `kubectl describe pod` for
+    `reason: OOMKilled` themselves. Scanning the whole response counted that as
+    a match — but naming your own blind spot is the opposite of concluding it.
+    Only the `## Root Cause` section grades the diagnosis.
+
+    Substring matching still cannot read negation — a root cause saying "this
+    is NOT a pool problem" would match `pool`. That is why the scenario this
+    came from grades on an exit code rather than a word.
+    """
+    diff = "--- a/check_db_pool.py\n+++ b/check_db_pool.py\n@@ -1 +1 @@\n-x\n+y\n"
+    run = _run(
+        parsed_diff=diff,
+        root_cause="The liveness probe budget is too tight for the cache warm.",
+    )
+    run.llm_response_text = (
+        "## Reasoning\nIf the probe change does not help, revisit the "
+        "connection pool hypothesis by checking the pool metrics."
+    )
+    score = score_run(_scenario(keywords=("pool",)), run)
+    assert score.label == "partial"
+    assert not score.root_cause_match
+
+
+def test_undeliverable_grade_still_reads_the_whole_response():
+    """The other path asks "did it EXPLAIN what has to happen", and that
+    explanation legitimately lives in Reasoning rather than the root cause —
+    so it keeps scanning the full body."""
+    run = _run(parsed_diff=None, root_cause="probe timeout too low", confidence=2)
+    run.llm_response_text = (
+        "## Reasoning\nThe chart must be repackaged and the pinned version bumped."
+    )
+    score = score_run(
+        _scenario(expect_patch=False, max_confidence=2, keywords=("repackage",)), run
+    )
+    assert score.label == "correct"
+    assert score.root_cause_match

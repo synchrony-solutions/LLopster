@@ -7,6 +7,7 @@ from pathlib import Path
 
 from anthropic import AsyncAnthropic
 
+from src.agent.cluster_state import format_cluster_state
 from src.agent.context_collector import AlertContext
 from src.agent.dedup import PreviousAttempt
 from src.agent.investigator import Investigation
@@ -21,7 +22,7 @@ SYSTEM_PROMPT = """You are an SRE assistant embedded in an incident response pip
 You receive a Prometheus alert, the surrounding Loki log lines, the alert's
 underlying metric values, and the source code of the affected service. Your job:
 
-1. Identify the root cause of the alert from the logs and metrics.
+1. Identify the root cause of the alert from the evidence collected for it.
 2. Locate the specific file(s) and line(s) in the codebase that caused it.
 3. Propose a minimal patch as a unified diff that fixes the root cause.
 4. Rate your confidence in the diagnosis and fix.
@@ -40,7 +41,7 @@ Format your response as:
 <N>/5 — <one sentence explaining your certainty>
 
 Use this scale:
-- 5: Root cause is unambiguous from logs/metrics; fix is clear and isolated
+- 5: Root cause is unambiguous from the collected evidence; fix is clear and isolated
 - 4: High confidence in root cause and fix; minor uncertainty remains
 - 3: Plausible root cause and fix, but limited evidence or multiple possible causes
 - 2: Uncertain root cause; fix is a best guess based on limited context
@@ -399,6 +400,12 @@ def _format_alert_context(
     lines += ["", f"## Prometheus samples ({len(ctx.metric_samples)})"]
     for s in ctx.metric_samples:
         lines.append(f"- {s.metric} = {s.value}")
+    if ctx.cluster_state is not None:
+        # Volatile by construction (live object state), and rendered here —
+        # after the codebase blob's cache_control marker — so it can never
+        # invalidate the cached prefix.
+        lines += [""]
+        lines += format_cluster_state(ctx.cluster_state)
     if ctx.errors:
         lines += ["", "## Errors collecting context"]
         lines += [f"- {e}" for e in ctx.errors]

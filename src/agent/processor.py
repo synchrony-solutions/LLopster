@@ -79,6 +79,7 @@ async def process_alert(
     investigator: Investigator | None = None,
     lookback_minutes: int | None = None,
     enforce_cost_breaker: bool = True,
+    enforce_backoff: bool = True,
 ) -> None:
     """Run the full pipeline against a previously-created Run row.
 
@@ -187,10 +188,16 @@ async def process_alert(
         # it stays on for both webhook and dispatch — a queued run being drained
         # by hand won't match (its own row is excluded, and it opens a PR or is
         # the fresh anchor).
+        # `enforce_backoff=False` is for the eval harness, which replays the
+        # same frozen alert deliberately and repeatedly. The backoff is a
+        # guard against *re-firings* costing tokens; a replay is not a
+        # re-firing. Left on, re-running the corpus inside the window
+        # suppresses every scenario and reports 0% — indistinguishable from a
+        # catastrophic regression. Same reasoning as enforce_cost_breaker.
         backoff_minutes = (
             int(backoff_setting) if backoff_setting else config.patch_backoff_minutes
         )
-        if backoff_minutes > 0:
+        if enforce_backoff and backoff_minutes > 0:
             since = datetime.now(timezone.utc) - timedelta(minutes=backoff_minutes)
             async with sessionmaker() as session:
                 recent = await find_recent_unproductive_run(

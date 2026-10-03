@@ -163,3 +163,15 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" }}
 {{- end -}}
+
+{{/*
+Name for the cluster-context RBAC objects (issue #23).
+
+Prefixed with the agent's ServiceAccount name so the grant is traceable to its
+subject, and suffixed with the release namespace because ClusterRole and
+ClusterRoleBinding are cluster-scoped: Helm 3 releases are namespaced but the
+objects they create here are not, so two installs would otherwise collide.
+*/}}
+{{- define "llopster.clusterContext.roleName" -}}
+{{- printf "%s-cluster-reader-%s" (include "llopster.agent.serviceAccountName" .) .Release.Namespace | trunc 63 | trimSuffix "-" -}}
+{{- end -}}

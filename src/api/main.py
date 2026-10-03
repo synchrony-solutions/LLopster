@@ -27,6 +27,7 @@ from src.agent.alert_handler import parse_alertmanager_payload
 from src.agent.cost_breaker import log_cost_breaker_status
 from src.api.auth import log_auth_status, require_inbound_auth
 from src.api.metrics import render_metrics
+from src.agent.cluster_state import ClusterStateCollector
 from src.agent.context_collector import ContextCollector
 from src.agent.dedup import compute_dedup_key, find_open_run_by_dedup_key
 from src.agent.packs import load_packs_into
@@ -55,6 +56,11 @@ from src.config import config
 from src.db import create_engine, get_sessionmaker, init_schema
 from src.db import repository as repo
 from src.integrations.github_client import GitHubClient
+from src.integrations.kubernetes_client import (
+    CA_CERT_PATH,
+    KubernetesClient,
+    in_cluster_base_url,
+)
 from src.integrations.loki_client import LokiClient
 from src.integrations.notifier import build_notifier
 from src.integrations.prometheus_client import PrometheusClient
@@ -119,6 +125,11 @@ async def lifespan(app: FastAPI):
     # visible and operators are nudged to tune it to their volume/budget.
     log_cost_breaker_status("agent")
 
+    # Read-only Kubernetes cluster state. Off unless explicitly enabled, and
+    # `None` here means the ContextCollector never even builds the section —
+    # no client, no RBAC use, no behavior change.
+    app.state.k8s_http, cluster_collector = _build_cluster_collector()
+
     # Agent components.
     app.state.collector = ContextCollector(
         loki=LokiClient(config.loki_url, client=app.state.http),
@@ -126,6 +137,7 @@ async def lifespan(app: FastAPI):
         lookback_minutes=config.log_lookback_minutes,
         max_log_lines=config.max_log_lines,
         scope_labels=config.log_scope_labels,
+        cluster=cluster_collector,
     )
     app.state.services = ServiceRegistry(config.services_config_path)
 
@@ -265,7 +277,59 @@ async def lifespan(app: FastAPI):
             log.info("waiting on %d in-flight task(s)", len(app.state.background_tasks))
             await asyncio.gather(*app.state.background_tasks, return_exceptions=True)
         await app.state.http.aclose()
+        if app.state.k8s_http is not None:
+            await app.state.k8s_http.aclose()
         await app.state.db_engine.dispose()
+
+
+def _build_cluster_collector() -> tuple[
+    httpx.AsyncClient | None, ClusterStateCollector | None
+]:
+    """Build the read-only Kubernetes collector, or (None, None).
+
+    Gets its own httpx client rather than sharing `app.state.http`: the API
+    server presents a certificate signed by the cluster CA, which the shared
+    client has no reason to trust.
+
+    Every failure path returns None with a warning — cluster context is
+    additive, so "not available" must degrade to the existing logs+metrics
+    behavior rather than block startup.
+    """
+    if not config.cluster_context_enabled:
+        return None, None
+
+    base_url = in_cluster_base_url()
+    if base_url is None:
+        log.warning(
+            "cluster context enabled but KUBERNETES_SERVICE_HOST is unset "
+            "(not running in a pod) — cluster state will not be collected"
+        )
+        return None, None
+
+    if not config.cluster_context_all_namespaces and not config.cluster_context_namespaces:
+        log.warning(
+            "cluster context enabled but no namespaces are permitted "
+            "(clusterContext.namespaces is empty and allNamespaces is false) — "
+            "every alert will be reported as out of scope"
+        )
+
+    verify: Any = CA_CERT_PATH if Path(CA_CERT_PATH).exists() else True
+    http = httpx.AsyncClient(timeout=10.0, verify=verify)
+    collector = ClusterStateCollector(
+        KubernetesClient(base_url, client=http),
+        namespaces=config.cluster_context_namespaces,
+        all_namespaces=config.cluster_context_all_namespaces,
+        max_events=config.cluster_context_max_events,
+        include_pod_spec=config.cluster_context_include_pod_spec,
+        max_pod_spec_bytes=config.cluster_context_max_pod_spec_bytes,
+    )
+    log.info(
+        "cluster context: ENABLED (read-only) namespaces=%s all_namespaces=%s",
+        ",".join(config.cluster_context_namespaces) or "-",
+        config.cluster_context_all_namespaces,
+    )
+    return http, collector
+
 
 
 app = FastAPI(title="llopster agent", version="0.6.0", lifespan=lifespan)

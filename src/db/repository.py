@@ -156,6 +156,11 @@ async def record_collected_context(
     run.collection_errors_json = list(ctx.errors)
     run.log_lines_json = [_serialize(l) for l in ctx.log_lines]
     run.metric_samples_json = [_serialize(s) for s in ctx.metric_samples]
+    # Left NULL when cluster access is disabled, so "never looked" and
+    # "looked, found nothing" stay distinguishable in the run history.
+    run.cluster_state_json = (
+        _serialize(ctx.cluster_state) if ctx.cluster_state is not None else None
+    )
     await session.commit()
 
 

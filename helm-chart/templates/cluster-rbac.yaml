@@ -1,0 +1,98 @@
+{{- /*
+  Read-only Kubernetes cluster-state access for the agent (issue #23).
+
+  Nothing here renders unless agent.clusterContext.enabled=true. That is the
+  point: this grants an LLM-driven agent the ability to read live cluster
+  objects, so it is opt-in, revocable on its own, and scopeable to exactly the
+  namespaces whose alerts the agent handles.
+
+  Two invariants this file exists to hold, both asserted by
+  scripts/check_cluster_rbac.py in chart CI:
+
+    1. No verb outside get/list/watch. There is no write path in the client
+       either, but a Role is the durable statement of intent.
+    2. No `secrets` rule, ever. The agent already holds a write-scoped GitHub
+       token; adding secrets read would turn incident context into an
+       exfiltration surface. Values-provenance work (issue #25) will be
+       tempted to ask for it — the answer stays no, source-merge the values
+       instead.
+*/ -}}
+{{- if .Values.agent.clusterContext.enabled }}
+{{- if and (not .Values.agent.clusterContext.allNamespaces) (not .Values.agent.clusterContext.namespaces) }}
+{{- fail "agent.clusterContext.enabled=true grants nothing: set agent.clusterContext.namespaces to the namespaces whose alerts this agent handles, or agent.clusterContext.allNamespaces=true. As configured every alert would be reported as out of scope." }}
+{{- end }}
+# ClusterRole, not Role, even for namespace-scoped access: a ClusterRole bound
+# by a RoleBinding grants only that namespace, and keeps one copy of the rules
+# no matter how many namespaces are listed.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "llopster.clusterContext.roleName" . }}
+  labels:
+    {{- include "k3s-deployment.labels" . | nindent 4 }}
+    app.kubernetes.io/component: agent
+rules:
+  # The resource list tracks what src/agent/cluster_state.py actually reads,
+  # not everything that might one day be useful. `services`, `configmaps` and
+  # `horizontalpodautoscalers` are deliberately absent: nothing fetches them,
+  # and ConfigMaps in particular are where connection strings get left by
+  # mistake. Add a resource here when a call site for it lands, not before.
+  - apiGroups: [""]
+    resources:
+      - pods                    # container states, exit codes, resources
+      - events                  # BackOff, FailedScheduling, admission denials
+      - persistentvolumeclaims  # FailedBinding, and why
+      - nodes                   # node conditions on node-scoped alerts
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    # Owner-chain resolution (pod -> ReplicaSet -> Deployment) and the
+    # workload-selector path used when an alert names no pod.
+    resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list", "watch"]
+{{- if .Values.agent.clusterContext.allNamespaces }}
+---
+# Cluster-wide binding. Also the only configuration under which the agent can
+# read nodes at all — nodes are cluster-scoped, so a RoleBinding cannot grant
+# them however many namespaces it names.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "llopster.clusterContext.roleName" . }}
+  labels:
+    {{- include "k3s-deployment.labels" . | nindent 4 }}
+    app.kubernetes.io/component: agent
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "llopster.clusterContext.roleName" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "llopster.agent.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- else }}
+{{- range $ns := .Values.agent.clusterContext.namespaces }}
+---
+# One RoleBinding per listed namespace: the agent can read these and nothing
+# else, and revoking one namespace is a values edit rather than a redesign.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "llopster.clusterContext.roleName" $ }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "k3s-deployment.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: agent
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "llopster.clusterContext.roleName" $ }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "llopster.agent.serviceAccountName" $ }}
+    namespace: {{ $.Release.Namespace }}
+{{- end }}
+{{- end }}
+{{- end }}

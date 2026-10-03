@@ -33,6 +33,31 @@ class Config:
         if label.strip()
     )
 
+    # ---- Read-only Kubernetes cluster state ----------------------------
+    # Off by default and independently revocable: this is a real new
+    # capability for an LLM-driven agent, not a tuning knob. When on, the
+    # agent reads (GET only) the objects a firing alert names — pod states,
+    # exit codes, owner chain, events — and feeds them to the prompt beside
+    # logs and metrics. See src/integrations/kubernetes_client.py.
+    #
+    # `namespaces` is the allowlist the chart binds RoleBindings for; empty
+    # with all_namespaces=false means nothing is readable. `all_namespaces`
+    # is also the bit that says a ClusterRoleBinding exists, which is what
+    # makes cluster-scoped reads (nodes) possible at all.
+    cluster_context_enabled: bool = os.getenv("CLUSTER_CONTEXT_ENABLED", "false").lower() in {"true", "1", "yes", "on"}
+    cluster_context_namespaces: tuple[str, ...] = tuple(
+        ns.strip()
+        for ns in os.getenv("CLUSTER_CONTEXT_NAMESPACES", "").split(",")
+        if ns.strip()
+    )
+    cluster_context_all_namespaces: bool = os.getenv("CLUSTER_CONTEXT_ALL_NAMESPACES", "false").lower() in {"true", "1", "yes", "on"}
+    # Payload ceilings. PodSpecs are large and this feeds the metered
+    # synthesis prompt, so both the event list and the spec blob are capped;
+    # what got dropped is recorded on the run rather than silently omitted.
+    cluster_context_max_events: int = int(os.getenv("CLUSTER_CONTEXT_MAX_EVENTS", "20"))
+    cluster_context_include_pod_spec: bool = os.getenv("CLUSTER_CONTEXT_INCLUDE_POD_SPEC", "true").lower() in {"true", "1", "yes", "on"}
+    cluster_context_max_pod_spec_bytes: int = int(os.getenv("CLUSTER_CONTEXT_MAX_POD_SPEC_BYTES", "8000"))
+
     # Per-service codebase + GitHub repo lookup. See config/services.yaml.
     services_config_path: str = os.getenv("SERVICES_CONFIG", "config/services.yaml")
 

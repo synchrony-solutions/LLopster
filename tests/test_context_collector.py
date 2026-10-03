@@ -4,6 +4,7 @@ import httpx
 import pytest
 
 from src.agent.alert_handler import ParsedAlert
+from src.agent.cluster_state import ClusterState
 from src.agent.context_collector import ContextCollector, _build_logql, _extract_promql
 from src.integrations.loki_client import LokiClient
 from src.integrations.prometheus_client import PrometheusClient
@@ -151,3 +152,69 @@ async def test_collect_records_error_when_loki_fails():
 
     assert ctx.log_lines == []
     assert any("loki query failed" in e for e in ctx.errors)
+
+
+# ---------------------------------------------------------------------------
+# Read-only cluster state (issue #23) — opt-in, and never fatal
+# ---------------------------------------------------------------------------
+
+
+def _quiet_collector(**kwargs) -> ContextCollector:
+    """A collector whose Loki/Prometheus calls succeed with empty results, so
+    a test can look at the cluster path alone."""
+    empty = httpx.MockTransport(
+        lambda r: httpx.Response(200, json={"data": {"result": []}})
+    )
+    http = httpx.AsyncClient(transport=empty)
+    return ContextCollector(
+        loki=LokiClient("http://loki", client=http),
+        prometheus=PrometheusClient("http://prom", client=http),
+        **kwargs,
+    )
+
+
+@pytest.mark.asyncio
+async def test_cluster_state_is_none_when_cluster_access_is_disabled():
+    """The default. `None` (not an empty ClusterState) is what tells a run
+    record the agent never looked."""
+    collector = _quiet_collector()
+    ctx = await collector.collect(_alert(labels={"service": "demo-app"}))
+    assert ctx.cluster_state is None
+    assert ctx.errors == []
+
+
+@pytest.mark.asyncio
+async def test_cluster_state_is_attached_when_enabled():
+    class FakeCluster:
+        async def collect(self, alert):
+            return ClusterState(namespace="prod", notes=["looked"])
+
+    collector = _quiet_collector(cluster=FakeCluster())
+    ctx = await collector.collect(_alert(labels={"service": "demo-app"}))
+    assert ctx.cluster_state.namespace == "prod"
+
+
+@pytest.mark.asyncio
+async def test_cluster_errors_surface_through_the_existing_error_channel():
+    class FakeCluster:
+        async def collect(self, alert):
+            return ClusterState(errors=["pod lookup failed: 403 forbidden"])
+
+    collector = _quiet_collector(cluster=FakeCluster())
+    ctx = await collector.collect(_alert(labels={"service": "demo-app"}))
+    assert ctx.errors == ["cluster: pod lookup failed: 403 forbidden"]
+
+
+@pytest.mark.asyncio
+async def test_an_exploding_cluster_collector_never_fails_the_run():
+    """Acceptance criterion: API-server trouble degrades to a logged warning
+    and the existing logs+metrics context, never a failed run."""
+
+    class Exploding:
+        async def collect(self, alert):
+            raise RuntimeError("kaboom")
+
+    collector = _quiet_collector(cluster=Exploding())
+    ctx = await collector.collect(_alert(labels={"service": "demo-app"}))
+    assert ctx.cluster_state is None
+    assert ctx.errors == ["cluster state collection failed: kaboom"]

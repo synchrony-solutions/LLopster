@@ -4,12 +4,21 @@ The grade is intentionally simple and explainable — an acquirer's diligence
 team should be able to read exactly why a scenario passed or failed:
 
   correct — the agent proposed an actionable patch AND it targets the
-            ground-truth file(s) (the bug really is in `check_db_pool.py`).
-  partial — it got *one* of the two: proposed a patch but touched the wrong
-            file, or located the right file (investigation) but produced no
-            patch. Real signal, not a full pass.
+            ground-truth file(s) (the bug really is in `check_db_pool.py`),
+            AND — where the scenario declares `root_cause_keywords` — the
+            diagnosis matches at least one of them.
+  partial — it got *some* of that: proposed a patch but touched the wrong
+            file, located the right file (investigation) but produced no
+            patch, or patched the right file for demonstrably the wrong
+            reason. Real signal, not a full pass.
   wrong   — no actionable patch and the right file was never located, or the
             run failed.
+
+`root_cause_keywords` counts on this path because file targeting alone cannot
+grade a scenario whose competing hypotheses live in the same file — a memory
+limit and a liveness probe in one `values.yaml` are both "values.yaml". A
+scenario that declares no keywords is graded on file targeting exactly as
+before.
 
 `expect_patch: false` scenarios invert this (the right answer is to NOT patch),
 so the harness can also score noise-suppression once such scenarios exist.
@@ -99,9 +108,35 @@ def _patch_proposed(run: Run) -> bool:
 
 
 def _root_cause_match(run: Run, keywords: tuple[str, ...]) -> bool:
+    """Did the response *mention* any keyword, anywhere?
+
+    Used by the undeliverable-fix grade, where the question is "did it explain
+    what has to happen" — and that explanation legitimately lives in the
+    Reasoning section rather than the root cause.
+    """
     if not keywords:
         return False
     blob = f"{run.parsed_root_cause or ''}\n{run.llm_response_text or ''}".lower()
+    return any(kw.lower() in blob for kw in keywords)
+
+
+def _diagnosis_match(run: Run, keywords: tuple[str, ...]) -> bool:
+    """Did the agent *conclude* the expected root cause?
+
+    Narrower than `_root_cause_match` on purpose: only the `## Root Cause`
+    section counts. Scanning the whole response conflates "concluded X" with
+    "mentioned X while ruling it out" — a real control run diagnosed a liveness
+    probe failure and then told the operator to go check `kubectl describe pod`
+    for `reason: OOMKilled` themselves. That is the model correctly naming its
+    own blind spot, and it scored as a match on the full blob.
+
+    Substring matching still cannot read negation ("this is not an OOMKill"),
+    so prefer keywords a wrong answer has no reason to produce — an exit code
+    read off the pod object beats a word anyone can speculate.
+    """
+    if not keywords:
+        return False
+    blob = (run.parsed_root_cause or "").lower()
     return any(kw.lower() in blob for kw in keywords)
 
 
@@ -125,11 +160,25 @@ def score_run(scenario: Scenario, run: Run | None) -> ScenarioScore:
     patch_proposed = _patch_proposed(run)
     targets = _targets_expected_file(run, gt.expected_files)
     rc_match = _root_cause_match(run, gt.root_cause_keywords)
+    diagnosis_match = _diagnosis_match(run, gt.root_cause_keywords)
 
     if run.processing_status == "failed":
         label, reason = "wrong", f"run failed: {run.error_message or 'unknown error'}"
     elif gt.expect_patch:
-        if patch_proposed and targets:
+        rc_match = diagnosis_match
+        if patch_proposed and targets and gt.root_cause_keywords and not diagnosis_match:
+            # Targeting the right file is not the same as the right diagnosis.
+            # Where a scenario's competing hypotheses live in the SAME file,
+            # file selection cannot separate them and the keywords are the only
+            # thing that can — `crashloop-oomkilled-no-logs` is precisely that
+            # shape. Declaring keywords used to be silently ignored here,
+            # which let such a scenario grade `correct` for the wrong reason.
+            label = "partial"
+            reason = (
+                "patch targets the ground-truth file but the root cause matches "
+                "none of the expected keywords — right file, wrong diagnosis"
+            )
+        elif patch_proposed and targets:
             label = "correct"
             reason = "patch proposed and targets the ground-truth file"
         elif patch_proposed or targets:

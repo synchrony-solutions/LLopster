@@ -46,6 +46,7 @@ from pathlib import Path
 
 from anthropic import AsyncAnthropic, BadRequestError
 
+from src.agent.cluster_state import format_cluster_state
 from src.agent.context_collector import AlertContext
 from src.agent.prompts import STAGE_INVESTIGATION, PromptResolver
 from src.services_registry import ChartLayer
@@ -72,7 +73,7 @@ counts, grouped by directory). You do NOT see file contents.
 
 Your job has exactly two outputs:
 
-1. A one-paragraph root-cause hypothesis grounded in the logs/metrics.
+1. A one-paragraph root-cause hypothesis grounded in the collected evidence.
 2. A short list (≤ 20) of file paths from the outline that are most
    likely to need editing to fix the root cause. Use ONLY paths that
    appear verbatim in the codebase outline — never invent paths.
@@ -91,7 +92,7 @@ explain in your reasoning. Synthesis will fall back to a broader scan.
 Format your response exactly as:
 
 ## Root Cause Hypothesis
-<one paragraph grounded in the specific log lines and metric values>
+<one paragraph grounded in the specific evidence collected>
 
 ## Affected Files
 - <path/from/outline.py>
@@ -101,12 +102,12 @@ Format your response exactly as:
 <N>/5 — <one sentence explaining your certainty>
 
 ## Reasoning
-<one paragraph explaining how the logs/metrics point to those files>
+<one paragraph explaining how the evidence points to those files>
 
 Confidence scale:
-- 5: log lines and metric values unambiguously point to specific files
+- 5: the collected evidence unambiguously points to specific files
 - 4: strong signal; one file confidently identified, others plausible
-- 3: log/metric correlation is suggestive but not conclusive
+- 3: the correlation is suggestive but not conclusive
 - 2: thin evidence; best guess from path-name heuristics
 - 1: outline alone is insufficient — recommend full-codebase fallback"""
 
@@ -335,6 +336,12 @@ def _format_user_blob(
     lines += ["", f"## Prometheus samples ({len(ctx.metric_samples)})"]
     for s in ctx.metric_samples:
         lines.append(f"- {s.metric} = {s.value}")
+    if ctx.cluster_state is not None:
+        # Volatile by construction (live object state), and rendered here —
+        # after the codebase blob's cache_control marker — so it can never
+        # invalidate the cached prefix.
+        lines += [""]
+        lines += format_cluster_state(ctx.cluster_state)
     if ctx.errors:
         lines += ["", "## Errors collecting context"]
         lines += [f"- {e}" for e in ctx.errors]

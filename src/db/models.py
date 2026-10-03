@@ -66,6 +66,11 @@ class Run(Base):
     collection_errors_json: Mapped[list[str]] = mapped_column(JSON, default=list)
     log_lines_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
     metric_samples_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    # Read-only Kubernetes objects collected for this alert (serialized
+    # ClusterState). NULL on every run where cluster access was off — which
+    # is the default — as opposed to a stored object with empty lists, which
+    # means the agent looked and found nothing.
+    cluster_state_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
 
     # Triage stage (Haiku gate — runs before context collection so noise
     # alerts cost ~$0.001 instead of a full synthesis call). All NULL on

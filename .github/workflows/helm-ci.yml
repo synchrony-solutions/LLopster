@@ -63,6 +63,16 @@ jobs:
       - name: ct lint
         run: ct lint --config ct.yaml --all
 
+      # Read-only cluster access (issue #23) is only acceptable because the
+      # RBAC it generates carries no verb outside get/list/watch and never
+      # `secrets`, and because the default install grants nothing at all.
+      # A one-word edit to a verb list is easy to miss in review, so this is
+      # a gate rather than a convention.
+      - name: cluster RBAC is read-only
+        run: |
+          pip install pyyaml
+          python scripts/check_cluster_rbac.py ./helm-chart
+
   install:
     name: kind install smoke
     runs-on: ubuntu-latest
@@ -86,6 +96,10 @@ jobs:
 
       # Install with bundled observability OFF (BYO placeholder URLs) so the
       # smoke test stays fast and doesn't pull the whole Prometheus/Loki stack.
+      # clusterContext is switched ON here (scoped to the release namespace,
+      # which --create-namespace guarantees exists) so the RBAC objects it
+      # generates are validated by a real API server — RBAC is exactly the
+      # kind of manifest `helm template` cannot tell you is acceptable.
       # No --wait: the LLopster agent/dashboard images are not yet published, so
       # their pods can't become Ready in CI. This step validates that every
       # rendered manifest is accepted by a real API server (schema + admission)
@@ -98,7 +112,9 @@ jobs:
             --set prometheus.bundled=false \
             --set prometheus.url=http://prometheus.example:9090 \
             --set loki.bundled=false \
-            --set loki.url=http://loki.example:3100
+            --set loki.url=http://loki.example:3100 \
+            --set agent.clusterContext.enabled=true \
+            --set 'agent.clusterContext.namespaces={llopster}'
 
       - name: Show installed resources
         if: always()
