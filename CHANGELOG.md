@@ -9,6 +9,20 @@ Chart version and `appVersion` are released in lockstep: chart `X.Y.Z` always
 ships image tag `X.Y.Z`. The release workflow refuses to publish if the pushed
 `vX.Y.Z` tag and `helm-chart/Chart.yaml` disagree.
 
+## [Unreleased]
+
+### Fixed
+
+- **Eval replays no longer show the model the scenario's name.** Both LLM
+  prompts print the codebase root, and a scenario that ships its own codebase
+  was replayed in place — `eval/scenarios/<scenario-id>/codebase`, where the
+  id describes the answer (`crashloop-oomkilled-no-logs`). A control run cited
+  the path as its evidence. Replays now copy the codebase to
+  `<tmp>/<service-name>`, matching what production mounts at
+  `/codebases/<name>`. Results recorded before this fix for
+  `crashloop-oomkilled-no-logs`, `oci-chart-undeliverable-patch` and
+  `invisible-chart-layer-override` were measured with the leak present.
+
 ## [1.3.0] - 2026-10-03
 
 Cluster-context release. The agent can now read the live Kubernetes objects an
