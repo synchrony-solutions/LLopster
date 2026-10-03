@@ -9,7 +9,17 @@ Chart version and `appVersion` are released in lockstep: chart `X.Y.Z` always
 ships image tag `X.Y.Z`. The release workflow refuses to publish if the pushed
 `vX.Y.Z` tag and `helm-chart/Chart.yaml` disagree.
 
-## [Unreleased]
+## [1.3.0] - 2026-10-03
+
+Cluster-context release. The agent can now read the live Kubernetes objects an
+alert is about, closing the class of failures whose answer exists in no log
+line — a container that dies during startup has an exit code and nothing else.
+Alongside it, two operator declarations stop the worst failure a PR-opening
+agent can have: a correct, merged patch that never reaches the cluster.
+
+Every default is unchanged — cluster access is off, and both declarations are
+optional. A 1.2.0 install upgrades with no values edits; see *Notes for
+operators* for the one gate that now refuses more than it did.
 
 ### Added
 
@@ -42,12 +52,39 @@ ships image tag `X.Y.Z`. The release workflow refuses to publish if the pushed
     labels. The Prometheus `job` label is not mistaken for a batch Job.
   - Recorded on the run (`cluster_state_json`, migration `0009`) and rendered
     on the run detail page.
+- **Delivery-mode declaration** (`delivery` in `services.yaml`, issue #24,
+  #27). `mode: git-manifest | oci-chart | image-build` tells the agent whether
+  a merged source patch actually reconciles. Under the two indirect modes a
+  source-only patch passes every gate and changes nothing in the cluster; with
+  a same-repo `version_ref` the synthesis prompt now requires the version bump
+  in the same diff, and with a cross-repo one it asks for a low-confidence
+  explanation of both changes instead of a dead PR.
+- **Chart-lineage declaration** (`chart_lineage` in `services.yaml`, issue #25,
+  #27). Names the chart layers a service is delivered through and marks which
+  are not in the codebase the agent can see, so a key overridden by an
+  invisible parent chart is reported as such rather than patched in the copy
+  that loses.
+- Eval scenarios `oci-chart-undeliverable-patch` and
+  `invisible-chart-layer-override` for the two declarations.
 - Eval scenario `crashloop-oomkilled-no-logs`, and `recorded_context.cluster_state`
   support in the eval corpus, so the benefit can be measured offline rather
   than asserted.
 
 ### Fixed
 
+- **Chart templates are detected structurally, not by directory name** (issue
+  #26, #28). The protected-path gate matched the literal names `helm-chart` and
+  `charts`, so chart templates under any other layout
+  (`<tool>/helm/templates/`, `deploy/templates/`) were **not** protected, while
+  every file under any directory named `charts` — app values, docs, ordinary
+  Python source — was refused. A chart root is now any directory holding a
+  `Chart.yaml`; its `templates/**` is protected and its `values*.yaml` and
+  `environments/**` are patchable.
+- **Eval `recorded_context` fidelity is enforced** (#33). A scenario carried a
+  metric sample and a log line no real run could have collected, which gave the
+  answer away and made the chart-lineage scenario pass with or without the
+  declaration under test. Every recorded metric must now come from the alert's
+  own expression, checked by a corpus-wide test.
 - The eval harness no longer suppresses its own replays. `replay_scenario` now
   passes `enforce_backoff=False`: the post-firing backoff guards against
   re-*firings* costing tokens, but a corpus replay is not a re-firing. Left on,
@@ -74,6 +111,30 @@ ships image tag `X.Y.Z`. The release workflow refuses to publish if the pushed
 - Both LLM confidence scales now reference "the collected evidence" rather than
   "logs/metrics" alone, so a diagnosis grounded in cluster state is not scored
   down for the absence of logs the container never wrote.
+- **Dependencies**: uvicorn 0.52.1 → 0.53.0, python-dotenv 1.2.2 → 1.2.3,
+  boto3/botocore 1.43.67 → 1.43.97, PyJWT 2.13.0 → 2.14.0, cryptography
+  50.0.0 → 50.0.1, SQLAlchemy 2.0.51 → 2.0.54, psycopg2-binary 2.9.12 →
+  2.9.13, pygments 2.20.0 → 2.21.0.
+- **Pinned GitHub Actions**: `helm/kind-action` v1.14.0 → v1.15.0,
+  `docker/setup-qemu-action` v4.2.0 → v4.4.0, `docker/setup-buildx-action`
+  v4.2.0 → v4.4.1 (SHA pins verified against the release tags).
+
+### Notes for operators
+
+- **Upgrading from 1.2.0 needs no values changes.** `agent.clusterContext` is
+  off by default and renders no RBAC; `delivery` and `chart_lineage` are
+  optional and absent blocks behave exactly as before.
+- **The protected-path gate now refuses patches to chart templates in any
+  layout.** If an agent PR previously landed on `<tool>/helm/templates/…`
+  because the directory was not named `helm-chart`, the same diagnosis now
+  fails closed with no PR. That is the documented intent; the old behavior was
+  the bug. In the other direction, `charts/<app>/values.yaml` and source under
+  a `charts/` directory are now patchable.
+- **The agent pod no longer mounts a ServiceAccount token by default.**
+  Nothing in LLopster used it, and Bedrock IRSA injects its own token
+  independently. Enabling `agent.clusterContext` turns the mount back on.
+- A malformed `delivery` block is dropped with a warning that says out loud no
+  constraint is being applied — check agent startup logs after adding one.
 
 ## [1.2.0] - 2026-08-17
 
@@ -292,6 +353,7 @@ License (FSL-1.1-ALv2); the Community tier self-hosts with no license key.
   service is its own repo, chart, release, and PR target — see
   [docs/PRODUCTION.md](docs/PRODUCTION.md).
 
+[1.3.0]: https://github.com/synchrony-solutions/LLopster/releases/tag/v1.3.0
 [1.2.0]: https://github.com/synchrony-solutions/LLopster/releases/tag/v1.2.0
 [1.1.0]: https://github.com/synchrony-solutions/LLopster/releases/tag/v1.1.0
 [1.0.0]: https://github.com/synchrony-solutions/LLopster/releases/tag/v1.0.0
