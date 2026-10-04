@@ -2,7 +2,7 @@ fastapi==0.141.1
 uvicorn[standard]==0.53.0
 python-dotenv==1.2.3
 python-multipart==0.0.32
-alembic>=1.19.1
+alembic>=1.20.0
 httpx==0.28.1
 # [bedrock] pulls boto3/botocore for the AWS Bedrock provider
 # (LLM_PROVIDER=bedrock). One image serves every provider/tier, so the AWS
